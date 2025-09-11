@@ -1,0 +1,4 @@
+routine Main() is
+  var x : integer is 5;
+  print x
+end

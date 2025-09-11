@@ -1,0 +1,14 @@
+// [OK] record + field access
+// Expect output: 3 4
+
+type Point is record
+  var x : integer
+  var y : integer
+end
+
+routine Main() is
+  var p : Point
+  p.x := 3
+  p.y := 4
+  print p.x, p.y
+end

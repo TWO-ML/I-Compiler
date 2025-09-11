@@ -1,0 +1,7 @@
+// [SEMANTICS] Use before declaration — ERROR
+// Expect: error "x is used before declaration"
+
+routine Main() is
+  x := 5
+  var x : integer
+end

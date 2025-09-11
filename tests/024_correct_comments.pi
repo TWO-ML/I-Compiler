@@ -1,0 +1,2 @@
+// line comment
+var a : integer /* block */ is 1

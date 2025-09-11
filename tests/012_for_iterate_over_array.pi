@@ -1,0 +1,14 @@
+// [OK] for v in array (iteration over elements)
+// Expect output: 2 4 6
+
+type Int3 is array[3] integer
+
+routine Main() is
+  var a : Int3
+  a[1] := 2
+  a[2] := 4
+  a[3] := 6
+  for v in a loop
+    print v
+  end
+end

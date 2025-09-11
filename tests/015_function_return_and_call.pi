@@ -1,0 +1,8 @@
+// [OK] function with return + call
+// Expect output: 36
+
+routine square(n : integer) : integer => n * n
+
+routine Main() is
+  print square(6)
+end

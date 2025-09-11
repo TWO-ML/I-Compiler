@@ -1,0 +1,12 @@
+// [OK] scope + shadowing
+// Expect output: 1 2 1
+
+routine Main() is
+  var x : integer is 1
+  print x         // 1
+  if true then
+    var x : integer is 2   // shadows outer x within the block
+    print x       // 2
+  end
+  print x         // outer again: 1
+end
