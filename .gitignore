@@ -1,0 +1,18 @@
+/build
+/*.o
+/*.obj
+/*.exe
+/*.out
+
+# test outputs
+/build/test-out/
+
+# OS/editor
+.DS_Store
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# logs
+*.log
