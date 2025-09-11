@@ -15,13 +15,15 @@ enum class TokenKind {
     KW_record, KW_array, KW_is, KW_end, KW_while, KW_loop,
     KW_for, KW_in, KW_reverse, KW_if, KW_then, KW_else,
     KW_print, KW_routine, KW_and, KW_or, KW_xor, KW_not,
+    KW_return,                     
     LParen, RParen, LBracket, RBracket,
-    Comma, Semicolon, Colon, Dot, Range, Assign, Arrow,
+    Comma, Colon, Dot, Range, Assign, Arrow,
     Plus, Minus, Star, Slash, Percent,
     LT, LE, GT, GE, EQ, NE,
+    Apostrophe,                 
+    Separator,                 
     EndOfFile, Error
 };
-
 struct Token {
     TokenKind kind;
     string    lexeme;
@@ -36,6 +38,8 @@ struct Lexer {
     string src;
     size_t i = 0;
     int line = 1, col = 1;
+    bool   hasPendingError = false;
+    Token  pendingErrorToken;
 
     explicit Lexer(string s): src(std::move(s)) {}
 
@@ -65,7 +69,7 @@ struct Lexer {
         for (;;) {
             while (true) {
                 char c = peek();
-                if (c==' ' || c=='\t' || c=='\r' || c=='\n') { advance(); }
+                if (c==' ' || c=='\t' || c=='\r') { advance(); }
                 else break;
             }
             if (peek()=='/' && peek(1)=='/') {
@@ -73,9 +77,25 @@ struct Lexer {
                 continue;
             }
             if (peek()=='/' && peek(1)=='*') {
-                advance(); advance();
-                while (!eof() && !(peek()=='*' && peek(1)=='/')) advance();
-                if (!eof()) { advance(); advance(); }
+                int start_line = line, start_col = col;
+                advance(); advance(); 
+                bool closed = false;
+                while (!eof()) {
+                    if (peek()=='*' && peek(1)=='/') {
+                        advance(); advance(); 
+                        closed = true;
+                        break;
+                    }
+                    advance(); 
+                }
+                if (!closed) {
+                    hasPendingError = true;
+                    pendingErrorToken.kind  = TokenKind::Error;
+                    pendingErrorToken.lexeme= "unterminated block comment";
+                    pendingErrorToken.line  = start_line;
+                    pendingErrorToken.col   = start_col;
+                    return; 
+                }
                 continue;
             }
             break;
@@ -95,7 +115,8 @@ struct Lexer {
             {"else",TokenKind::KW_else},{"print",TokenKind::KW_print},
             {"routine",TokenKind::KW_routine},
             {"and",TokenKind::KW_and},{"or",TokenKind::KW_or},
-            {"xor",TokenKind::KW_xor},{"not",TokenKind::KW_not}
+            {"xor",TokenKind::KW_xor},{"not",TokenKind::KW_not}, 
+            {"return",TokenKind::KW_return},
         };
         isBoolLit = false; boolVal = false;
         if (s=="true")  { isBoolLit=true; boolVal=true;  return TokenKind::Boolean; }
@@ -109,12 +130,26 @@ struct Lexer {
     }
 
     Token next() {
+        if (hasPendingError) {
+            hasPendingError = false;
+            return pendingErrorToken;
+        }
+
         skipWhitespaceAndComments();
+
+        if (hasPendingError) {
+            hasPendingError = false;
+            return pendingErrorToken;
+        }
+
         int tl = line, tc = col;
         if (eof()) return make(TokenKind::EndOfFile, "<eof>", tl, tc);
 
         char c = advance();
-
+        
+        if (c == '\n') {
+            return make(TokenKind::Separator, "\\n", tl, tc);
+        }
         if (isIdentStart(c)) {
             string s(1,c);
             while (isIdentCont(peek())) s.push_back(advance());
@@ -155,8 +190,8 @@ struct Lexer {
                       return make(TokenKind::GT, ">", tl, tc);
             case '/': if (match('=')) return make(TokenKind::NE, "/=", tl, tc);
                       return make(TokenKind::Slash, "/", tl, tc);
+            case '\'': return make(TokenKind::Apostrophe, "'", tl, tc);
         }
-
         switch (c) {
             case '+': return make(TokenKind::Plus, "+", tl, tc);
             case '-': return make(TokenKind::Minus, "-", tl, tc);
@@ -167,7 +202,7 @@ struct Lexer {
             case '[': return make(TokenKind::LBracket, "[", tl, tc);
             case ']': return make(TokenKind::RBracket, "]", tl, tc);
             case ',': return make(TokenKind::Comma, ",", tl, tc);
-            case ';': return make(TokenKind::Semicolon, ";", tl, tc);
+            case ';': return make(TokenKind::Separator, ";", tl, tc);
         }
 
         return make(TokenKind::Error, string(1,c), tl, tc);
@@ -183,10 +218,12 @@ static string kindName(TokenKind k) {
         C(KW_for) C(KW_in) C(KW_reverse) C(KW_if) C(KW_then) C(KW_else)
         C(KW_print) C(KW_routine) C(KW_and) C(KW_or) C(KW_xor) C(KW_not)
         C(LParen) C(RParen) C(LBracket) C(RBracket)
-        C(Comma) C(Semicolon) C(Colon) C(Dot) C(Range) C(Assign) C(Arrow)
+        C(Comma) C(Colon) C(Dot) C(Range) C(Assign) C(Arrow)
         C(Plus) C(Minus) C(Star) C(Slash) C(Percent)
         C(LT) C(LE) C(GT) C(GE) C(EQ) C(NE)
-        C(EndOfFile) C(Error)
+        C(Apostrophe)
+        C(Separator)                 
+        C(EndOfFile) C(Error) C(KW_return) 
 #undef C
     }
     return "?";
