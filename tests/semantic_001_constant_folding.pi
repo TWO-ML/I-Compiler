@@ -1,0 +1,12 @@
+// Демонстрация оптимизации: свёртка констант
+
+routine Main() is
+  var a : integer is 5 + 3         // должно стать 8
+  var b : integer is 10 * 2        // должно стать 20
+  var c : integer is 15 - 7        // должно стать 8
+  var d : boolean is 3 < 5         // должно стать true
+  var e : boolean is true and false // должно стать false
+  
+  print a, b, c, d, e
+end
+

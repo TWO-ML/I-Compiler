@@ -1,0 +1,19 @@
+// Демонстрация оптимизации: упрощение if
+
+routine Main() is
+  // if (true) должен быть упрощён до тела then
+  if true then
+    print 1
+    print 2
+  else
+    print 3
+  end
+  
+  // if (false) должен быть упрощён до тела else
+  if false then
+    print 4
+  else
+    print 5
+  end
+end
+
