@@ -1,0 +1,17 @@
+type Vec3  is array[3] real
+type Point is record
+  var x : integer
+  var y : integer
+end
+type Box is record
+  var p1 : Point
+  var p2 : Point
+  var data : array[2] Vec3
+end
+
+routine Main() is
+  var b : Box
+  b.p1.x := 1
+  b.p2.y := 2
+  b.data[1][3] := 3.14
+end

@@ -1,0 +1,6 @@
+var x : Integer is 5
+routine real(x : Integer): integer is
+    return x + x
+end
+
+routine plusOne(x : integer) : integer => x + 1

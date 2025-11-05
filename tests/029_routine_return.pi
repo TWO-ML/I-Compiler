@@ -1,0 +1,3 @@
+routine double(x: integer) : integer is
+  return x * 2
+end

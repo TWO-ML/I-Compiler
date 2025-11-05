@@ -1,0 +1,6 @@
+routine print_all(a : array[] integer) is
+end
+
+routine Main() is
+  print_all([]) 
+end

@@ -1,0 +1,15 @@
+type Int5 is array[5] integer
+
+routine square(n : integer) : integer => n * n
+
+routine Main() is
+  var xs : Int5
+  var i : integer is 1
+  while i <= 5 loop
+    xs[i] := square(i)
+    i := i + 1
+  end
+  for j in 1..5 reverse loop
+    print xs[j]
+  end
+end

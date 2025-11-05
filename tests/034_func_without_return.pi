@@ -1,0 +1,7 @@
+routine f(n : integer) : integer is
+ 
+end
+
+routine Main() is
+  print f(3)
+end

@@ -1,0 +1,10 @@
+routine ping() is
+  print 42
+end
+
+routine sum(a : integer, b : integer) : integer => a + b
+
+routine Main() is
+  ping()
+  print sum(3, 5), sum(10, 20)
+end

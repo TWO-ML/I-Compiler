@@ -1,0 +1,6 @@
+// Sizeless declaration can be used only for specifying subroutine parameters
+type Bad is array[] integer
+
+routine Main() is
+  var x : Bad
+end

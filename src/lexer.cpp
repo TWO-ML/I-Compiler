@@ -209,7 +209,7 @@ struct Lexer {
     }
 };
 
-static string kindName(TokenKind k) {
+static string tokenKindName(TokenKind k) {
     switch (k) {
 #define C(x) case TokenKind::x: return #x;
         C(Identifier) C(Integer) C(Real) C(Boolean)
@@ -245,7 +245,7 @@ int main(int argc, char** argv) {
 
     for (;;) {
         Token t = lex.next();
-        cout << t.line << ":" << t.col << "  " << kindName(t.kind)
+        cout << t.line << ":" << t.col << "  " << tokenKindName(t.kind)
              << "  \"" << t.lexeme << "\"";
         if (t.kind==TokenKind::Integer) cout << "  value=" << t.intValue;
         if (t.kind==TokenKind::Real)    cout << "  value=" << (double)t.realValue;
