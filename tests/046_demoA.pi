@@ -1,0 +1,10 @@
+routine double(x: integer) : integer is
+  print(x)
+  return x 
+end
+
+routine main() : integer is
+  print(5)
+  var a : integer is print(10)
+  return 0
+end

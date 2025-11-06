@@ -1519,7 +1519,7 @@ private:
                             if (idxExpr && idxExpr->kind == NodeKind::Primary && isInteger(idxExpr->text) && cur.arrayLen > 0) {
                                 long long idx = stoll(idxExpr->text);
                                 if (idx < 1 || idx > cur.arrayLen) {
-                                    addWarning(e->kids[i]->line, e->kids[i]->col,
+                                    addError(e->kids[i]->line, e->kids[i]->col,
                                         "index " + to_string(idx) + " is out of bounds 1.." + to_string(cur.arrayLen));
                                 }
                             }
@@ -2185,7 +2185,7 @@ private:
                     string varName = node->kids[i]->text;
                     
                     bool used = globalUsage.count(varName) && globalUsage[varName];
-                    
+                    //TODO: if func call - save, other constants values - rm
                     if (!used) {
                         toDelete.push_back(i);
                         unusedVarCount++;

@@ -1,7 +1,7 @@
-routine f(n : integer) : integer is
- return n*2
+routine f(n : bool) : bool is
+ return n
 end
 
 routine Main() is
-  print f(true)
+  print f(2)
 end

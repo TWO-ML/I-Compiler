@@ -1,0 +1,8 @@
+
+
+routine inc(n : integer) : integer => n + 1
+
+routine Main() is
+  var r : real is 3.14
+  print inc(r)    
+end
