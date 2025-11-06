@@ -1,7 +1,6 @@
-// Демонстрация оптимизации: упрощение if
 
 routine Main() is
-  // if (true) должен быть упрощён до тела then
+  // if (true) should be simplified to body then
   if true then
     print 1
     print 2
@@ -9,7 +8,7 @@ routine Main() is
     print 3
   end
   
-  // if (false) должен быть упрощён до тела else
+  // if (false) should be simplified to body else
   if false then
     print 4
   else

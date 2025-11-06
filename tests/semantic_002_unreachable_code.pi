@@ -1,10 +1,9 @@
-// Демонстрация оптимизации: удаление недостижимого кода
 
 routine test() : integer is
   var x : integer is 5
   return x
-  var y : integer is 10    // недостижимый код - должен быть удалён
-  print y                  // недостижимый код - должен быть удалён
+  var y : integer is 10    // should be removed
+  print y                  // should be removed
 end
 
 routine Main() is

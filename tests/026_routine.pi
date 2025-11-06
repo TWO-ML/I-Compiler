@@ -1,1 +1,1 @@
-routine square(n: integer) : integer => n * n
+routine square(n: integer) : integer =>> n * n

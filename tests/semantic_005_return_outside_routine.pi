@@ -1,10 +1,8 @@
-// Демонстрация проверки: return только внутри функции
-// Должна быть ошибка
 
 routine Main() is
   var x : integer is 5
   print x
 end
 
-return 10  // ОШИБКА: return вне функции
+return 10  // Error: return outside the function
 

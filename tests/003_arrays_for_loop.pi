@@ -1,5 +1,6 @@
 routine sum(a: array[] integer) : integer is
-  var s: integer := 0
+  var s: integer 
+  s:= 0
   for i in 1 .. a'length loop
     s := s + a[i]
   end

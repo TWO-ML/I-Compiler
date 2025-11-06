@@ -1,10 +1,8 @@
-// Демонстрация оптимизации: удаление неиспользуемых переменных
 
 routine Main() is
   var a : integer is 5
-  var b : integer is 10   // неиспользуемая - должна быть удалена
-  var c : integer is 15   // неиспользуемая - должна быть удалена
-  
+  var b : integer is 10   // should be removed
+  var c : integer is 15   // should be removed
   print a
 end
 

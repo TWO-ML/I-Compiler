@@ -1,25 +1,22 @@
-// Демонстрация всех оптимизаций вместе
-
+// Demo for all optimizations
 routine square(n : integer) : integer => n * n
 
 routine Main() is
-  var a : integer is 5 + 3          // свёртка констант -> 8
-  var unused1 : integer is 100      // удалится как неиспользуемая
-  var unused2 : integer is 200      // удалится как неиспользуемая
+  var a : integer is 5 + 3          
+  var unused1 : integer is 100      
+  var unused2 : integer is 200      
   
-  // if упростится до print a
   if true then
     print a
   else
     print 999
   end
   
-  // if упростится до print square(a)
-  if 3 < 5 then                     // свёртка констант -> true
+  if 3 < 5 then                     
     print square(a)
   end
   
-  var result : integer is 2 * 3     // свёртка констант -> 6
+  var result : integer is 2 * 3     
   print result
 end
 

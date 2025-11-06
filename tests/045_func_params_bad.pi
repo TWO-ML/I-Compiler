@@ -1,0 +1,7 @@
+routine f(n : integer) : integer is
+ return n*2
+end
+
+routine Main() is
+  print f(true)
+end
