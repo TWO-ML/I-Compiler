@@ -1,0 +1,10 @@
+// Проверка 1: Строгая проверка типов присваивания
+// Должна быть ошибка: присваивание real переменной integer
+
+routine Main() is
+  var a : integer is 5
+  var b : real is 3.14
+  
+  a := b  // ОШИБКА: type mismatch (integer := real)
+end
+

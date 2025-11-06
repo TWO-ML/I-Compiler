@@ -1124,6 +1124,20 @@ private:
     // table of symbols between traversals
     unordered_map<string, bool> globalUsage;
     
+    // ---- Type system (минимальный) ----
+    struct TypeInfo {
+        // "integer" | "real" | "boolean" | "array" | user type name | "unknown"
+        string kind = "unknown";
+        // для массивов:
+        int arrayLen = -1;        // -1 = неизвестная/size-less длина
+        string elemKind = "";     // тип элемента ("integer"/"real"/"boolean"/user/unknown)
+    };
+    
+    unordered_map<string, TypeInfo> typeDefs; // таблица именованных типов (из type decl)
+    unordered_map<string, vector<TypeInfo>> funcParamTypesTI; // реальные типы параметров
+    unordered_map<string, TypeInfo> funcReturnTI;             // реальный тип возврата
+    vector<string> routineNameStack;  // стек имён текущих функций
+    
     // Stats of optimizing
     int constantFoldingCount = 0;
     int unreachableCodeCount = 0;
@@ -1139,6 +1153,7 @@ public:
         scopes.push_back({});  // global scope
         insideRoutineDepth = 0;
         
+        buildTypeTable(root);          // собрать typeDefs из объявлений типов
         checkDeclarationsAndUsage(root);
         checkSizelessArrays(root); 
 
@@ -1173,6 +1188,203 @@ public:
     
 private:
 
+    // ---------- парсинг типа из AST типа (Prim/User/Array/Record) ----------
+    TypeInfo typeFromTypeNode(AST* t) {
+        TypeInfo ti;
+        if (!t) return ti;
+
+        switch (t->kind) {
+            case NodeKind::PrimType:
+                ti.kind = t->text; // "integer"/"real"/"boolean"
+                return ti;
+
+            case NodeKind::UserType: {
+                ti.kind = t->text; // имя типа
+                // если это alias массива в typeDefs — подтянем мета
+                auto it = typeDefs.find(t->text);
+                if (it != typeDefs.end()) return it->second;
+                return ti;
+            }
+
+            case NodeKind::ArrayType: {
+                ti.kind = "array";
+                // ArrayType: либо [size] + elemType (2 ребёнка), либо [] + elemType (1 ребёнок)
+                if (t->kids.size() == 2) {
+                    // первый ребёнок — выражение размера (ожидаем Primary с числом)
+                    AST* sz = t->kids[0].get();
+                    AST* el = t->kids[1].get();
+                    if (sz && sz->kind == NodeKind::Primary && !sz->text.empty()) {
+                        // допускаем знаковое число
+                        bool neg = (sz->text[0] == '-' || sz->text[0] == '+');
+                        bool allDigits = true;
+                        for (size_t i = neg ? 1 : 0; i < sz->text.size(); ++i)
+                            if (!isdigit(sz->text[i])) { allDigits = false; break; }
+                        if (allDigits) ti.arrayLen = stoi(sz->text);
+                    }
+                    TypeInfo elem = typeFromTypeNode(el);
+                    ti.elemKind = elem.kind;
+                } else if (t->kids.size() == 1) {
+                    // sizeless []
+                    AST* el = t->kids[0].get();
+                    TypeInfo elem = typeFromTypeNode(el);
+                    ti.elemKind = elem.kind;
+                    ti.arrayLen = -1; // неизвестно
+                }
+                return ti;
+            }
+
+            case NodeKind::RecordType:
+                ti.kind = "record";
+                return ti;
+
+            default:
+                return ti; // unknown
+        }
+    }
+
+    // ---------- построение таблицы именованных типов (type Name is Type) ----------
+    void buildTypeTable(AST* n) {
+        if (!n) return;
+        if (n->kind == NodeKind::TypeDecl && !n->kids.empty()) {
+            // TypeDecl "Name" -> child: type AST
+            TypeInfo ti = typeFromTypeNode(n->kids[0].get());
+            typeDefs[n->text] = ti;
+        }
+        for (auto& ch : n->kids) buildTypeTable(ch.get());
+    }
+
+    // ---------- сравнение типов (строгое) ----------
+    bool typesEqual(const TypeInfo& a, const TypeInfo& b) {
+        if (a.kind != b.kind) return false;
+        if (a.kind == "array") {
+            // для параметров размер может быть -1 (sizeless) — трактуем как "любой размер"
+            if (!(a.arrayLen == -1 || b.arrayLen == -1 || a.arrayLen == b.arrayLen)) return false;
+            return a.elemKind == b.elemKind;
+        }
+        return true;
+    }
+
+    // ---------- инференция типа выражения ----------
+    TypeInfo inferExprType(AST* e) {
+        TypeInfo ti;
+        if (!e) return ti;
+
+        switch (e->kind) {
+            case NodeKind::Primary: {
+                if (e->text == "true" || e->text == "false") { ti.kind = "boolean"; return ti; }
+                // число?
+                if (isInteger(e->text)) { ti.kind = "integer"; return ti; }
+                // вещественные?
+                {
+                    bool hasDot = false, ok = true;
+                    size_t i = (e->text.size() && (e->text[0]=='+'||e->text[0]=='-')) ? 1 : 0;
+                    for (; i < e->text.size(); ++i) {
+                        if (e->text[i]=='.') { if (hasDot) { ok=false; break; } hasDot=true; }
+                        else if (!isdigit(e->text[i])) { ok=false; break; }
+                    }
+                    if (ok && hasDot) { ti.kind = "real"; return ti; }
+                }
+                return ti;
+            }
+
+            case NodeKind::Name: {
+                // имя переменной/типа/функции как r-value: ищем символ в областях
+                for (int i = (int)scopes.size()-1; i>=0; --i) {
+                    auto it = scopes[i].find(e->text);
+                    if (it != scopes[i].end()) {
+                        // если это рутина — тип выражения задаётся returnType
+                        if (it->second.isRoutine) {
+                            ti.kind = it->second.returnType.empty() ? "unknown" : it->second.returnType;
+                            return ti;
+                        }
+                        // переменная
+                        ti.kind = it->second.type;
+                        // если это userType массива — развернём из typeDefs
+                        auto td = typeDefs.find(ti.kind);
+                        if (td != typeDefs.end() && td->second.kind == "array") {
+                            ti = td->second;
+                        }
+                        return ti;
+                    }
+                }
+                return ti;
+            }
+
+            case NodeKind::Call: {
+                // имя функции в e->text
+                for (int i = (int)scopes.size()-1; i>=0; --i) {
+                    auto it = scopes[i].find(e->text);
+                    if (it != scopes[i].end() && it->second.isRoutine) {
+                        ti.kind = it->second.returnType.empty() ? "unknown" : it->second.returnType;
+                        return ti;
+                    }
+                }
+                return ti;
+            }
+
+            case NodeKind::ModPrimary: {
+                // base .member [index] ... Здесь нас интересуют индексы
+                // 1) взять базовый тип
+                TypeInfo cur;
+                if (!e->kids.empty() && e->kids[0]->kind == NodeKind::Name) {
+                    cur = inferExprType(e->kids[0].get());
+                } else {
+                    cur.kind = "unknown";
+                }
+                // 2) применять по цепочке: Index -> спускаемся к elemKind (и проверка bounds)
+                for (size_t i = 1; i < e->kids.size(); ++i) {
+                    if (e->kids[i]->kind == NodeKind::Index) {
+                        // bounds warning (если индекс — константа и есть arrayLen)
+                        if (cur.kind == "array") {
+                            AST* idxExpr = e->kids[i]->kids.empty() ? nullptr : e->kids[i]->kids[0].get();
+                            if (idxExpr && idxExpr->kind == NodeKind::Primary && isInteger(idxExpr->text) && cur.arrayLen > 0) {
+                                long long idx = stoll(idxExpr->text);
+                                // считаем индексацию 1..N (по твоим примерам)
+                                if (idx < 1 || idx > cur.arrayLen) {
+                                    addWarning(e->kids[i]->line, e->kids[i]->col,
+                                        "index " + to_string(idx) + " is out of bounds 1.." + to_string(cur.arrayLen));
+                                }
+                            }
+                            // спускаемся в тип элемента
+                            cur.kind = cur.elemKind.empty() ? "unknown" : cur.elemKind;
+                            cur.arrayLen = -1;
+                            cur.elemKind = "";
+                        } else {
+                            // индекс к не-массиву — тип будет unknown
+                            cur.kind = "unknown";
+                        }
+                    }
+                    // Member/Attribute — пропускаем, без структуры record
+                }
+                return cur;
+            }
+
+            case NodeKind::Factor:
+            case NodeKind::Simple: {
+                // арифметика над числовыми → integer/real (грубо: если есть real → real, иначе integer)
+                if (e->kids.size()==2) {
+                    TypeInfo a = inferExprType(e->kids[0].get());
+                    TypeInfo b = inferExprType(e->kids[1].get());
+                    if (a.kind=="real" || b.kind=="real") { ti.kind="real"; }
+                    else if (a.kind=="integer" && b.kind=="integer") { ti.kind="integer"; }
+                    else { ti.kind="unknown"; }
+                    return ti;
+                }
+                return ti;
+            }
+
+            case NodeKind::Rel:
+            case NodeKind::Expr: {
+                // сравнения/логика → boolean
+                ti.kind = "boolean";
+                return ti;
+            }
+
+            default:
+                return ti;
+        }
+    }
+
     void checkDeclarationsAndUsage(AST* node) {
         if (!node) return;
         
@@ -1205,11 +1417,38 @@ private:
                 }
                 
                 scopes.back()[routineName] = sym;
+                
+                // Собираем вектор TypeInfo по параметрам
+                vector<TypeInfo> ptiList;
+                if (header->kids.size() > 0 && header->kids[0]->kind == NodeKind::Params) {
+                    for (auto& param : header->kids[0]->kids) {
+                        if (param->kind == NodeKind::Param && !param->kids.empty()) {
+                            ptiList.push_back(typeFromTypeNode(param->kids[0].get()));
+                        }
+                    }
+                }
+                funcParamTypesTI[routineName] = std::move(ptiList);
+                
+                // Return type
+                if (!sym.returnType.empty()) {
+                    // Найдём узел типа возврата прямо в header
+                    for (auto& ch : header->kids)
+                        if (ch && (ch->kind==NodeKind::PrimType||ch->kind==NodeKind::UserType
+                                || ch->kind==NodeKind::ArrayType||ch->kind==NodeKind::RecordType)) {
+                            funcReturnTI[routineName] = typeFromTypeNode(ch.get());
+                            break;
+                        }
+                }
             }
             
             // Push new scope
             scopes.push_back({});
             insideRoutineDepth++;
+            
+            // Добавляем имя функции в стек
+            if (node->kids.size() > 0 && node->kids[0]->kind == NodeKind::RoutineHeader) {
+                routineNameStack.push_back(node->kids[0]->text);
+            }
             
             // Extract parameters
             if (node->kids.size() > 0 && node->kids[0]->kind == NodeKind::RoutineHeader) {
@@ -1293,6 +1532,7 @@ private:
 
             scopes.pop_back();
             insideRoutineDepth--;
+            if (!routineNameStack.empty()) routineNameStack.pop_back();
             return;
         }
         //Variable declaration
@@ -1308,6 +1548,34 @@ private:
             
             for (auto& kid : node->kids) {
                 checkDeclarationsAndUsage(kid.get());
+            }
+            
+            // Проверка типов инициализации: если есть тип и выражение инициализации
+            // Структура: kids[0] = Type, kids[1] = Expression (если есть)
+            if (node->kids.size() >= 2) {
+                // Проверяем, что kids[0] - это тип (PrimType/UserType/ArrayType/RecordType)
+                AST* typeNode = node->kids[0].get();
+                AST* initExpr = node->kids[1].get();
+                
+                bool isTypeNode = (typeNode->kind == NodeKind::PrimType || 
+                                  typeNode->kind == NodeKind::UserType ||
+                                  typeNode->kind == NodeKind::ArrayType ||
+                                  typeNode->kind == NodeKind::RecordType);
+                
+                if (isTypeNode && initExpr) {
+                    TypeInfo declaredType = typeFromTypeNode(typeNode);
+                    TypeInfo initType = inferExprType(initExpr);
+                    
+                    if (declaredType.kind != "unknown" && initType.kind != "unknown" && 
+                        !typesEqual(declaredType, initType)) {
+                        addError(initExpr->line, initExpr->col,
+                            "type mismatch in variable initialization: declared type is '" +
+                            (declaredType.kind=="array" ? ("array(" + declaredType.elemKind + (declaredType.arrayLen>0?(","+to_string(declaredType.arrayLen)):"") + ")") : declaredType.kind) +
+                            "', initializer type is '" +
+                            (initType.kind=="array" ? ("array(" + initType.elemKind + (initType.arrayLen>0?(","+to_string(initType.arrayLen)):"") + ")") : initType.kind) +
+                            "'");
+                    }
+                }
             }
             return;
         }
@@ -1335,6 +1603,28 @@ private:
             if (insideRoutineDepth == 0) {
                 addError(node->line, node->col, 
                     "return statement can only be used inside a routine");
+            }
+            
+            // Проверка типа возврата
+            if (!routineNameStack.empty()) {
+                string cur = routineNameStack.back();
+                auto rit = funcReturnTI.find(cur);
+                if (rit != funcReturnTI.end()) {
+                    const TypeInfo& retFormal = rit->second;
+                    // return без выражения — уже ловится другой проверкой; если есть выражение — сверим тип
+                    if (!node->kids.empty()) {
+                        TypeInfo retActual = inferExprType(node->kids[0].get());
+                        if (retFormal.kind != "unknown" && retActual.kind != "unknown" &&
+                            !typesEqual(retActual, retFormal)) {
+                            addError(node->kids[0]->line, node->kids[0]->col,
+                                "return type mismatch: expected '" +
+                                (retFormal.kind=="array" ? ("array(" + retFormal.elemKind + (retFormal.arrayLen>0?(","+to_string(retFormal.arrayLen)):"") + ")") : retFormal.kind) +
+                                "', got '" +
+                                (retActual.kind=="array" ? ("array(" + retActual.elemKind + (retActual.arrayLen>0?(","+to_string(retActual.arrayLen)):"") + ")") : retActual.kind) +
+                                "'");
+                        }
+                    }
+                }
             }
         }
         
@@ -1380,6 +1670,27 @@ private:
                                 to_string(expectedArgs) + " arguments, but " +
                                 to_string(actualArgs) + " provided");
                         }
+                        
+                        // Типы аргументов vs типов параметров
+                        auto tiIt = funcParamTypesTI.find(funcName);
+                        if (tiIt != funcParamTypesTI.end()) {
+                            const auto& formals = tiIt->second;
+                            if (formals.size() == node->kids.size()) {
+                                for (size_t k = 0; k < formals.size(); ++k) {
+                                    TypeInfo actual = inferExprType(node->kids[k].get());
+                                    const TypeInfo& formal = formals[k];
+                                    if (!typesEqual(actual, formal)) {
+                                        addError(node->kids[k]->line, node->kids[k]->col,
+                                            "type mismatch for argument " + to_string(k+1) +
+                                            " in call to '" + funcName + "': expected '" +
+                                            (formal.kind=="array" ? ("array(" + formal.elemKind + (formal.arrayLen>0?(","+to_string(formal.arrayLen)):"") + ")") : formal.kind) +
+                                            "', got '" +
+                                            (actual.kind=="array" ? ("array(" + actual.elemKind + (actual.arrayLen>0?(","+to_string(actual.arrayLen)):"") + ")") : actual.kind) +
+                                            "'");
+                                    }
+                                }
+                            }
+                        }
                     }
                     
                     found = true;
@@ -1419,6 +1730,20 @@ private:
             
             if (node->kids.size() > 1) {
                 checkDeclarationsAndUsage(node->kids[1].get());
+            }
+            
+            // Сопоставление типов присваивания: type(LHS) := type(RHS)
+            if (node->kids.size() > 1) {
+                TypeInfo lt = inferExprType(node->kids[0].get());
+                TypeInfo rt = inferExprType(node->kids[1].get());
+                if (lt.kind != "unknown" && rt.kind != "unknown" && !typesEqual(lt, rt)) {
+                    addError(node->line, node->col,
+                        "type mismatch in assignment: left is '" +
+                        (lt.kind=="array" ? ("array(" + lt.elemKind + (lt.arrayLen>0?(","+to_string(lt.arrayLen)):"") + ")") : lt.kind) +
+                        "', right is '" +
+                        (rt.kind=="array" ? ("array(" + rt.elemKind + (rt.arrayLen>0?(","+to_string(rt.arrayLen)):"") + ")") : rt.kind) +
+                        "'");
+                }
             }
             return;
         }

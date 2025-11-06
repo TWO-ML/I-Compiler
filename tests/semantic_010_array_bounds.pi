@@ -1,0 +1,13 @@
+// Проверка 3: Проверка границ массива при константном индексе
+// Должно быть предупреждение о выходе за границы
+
+type Int5 is array[5] integer
+
+routine Main() is
+  var arr : Int5
+  arr[3] := 10   // OK: индекс в границах 1..5
+  arr[6] := 20   // WARNING: index 6 is out of bounds 1..5
+  arr[0] := 30   // WARNING: index 0 is out of bounds 1..5
+  print arr[3]
+end
+

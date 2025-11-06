@@ -1,0 +1,11 @@
+// Проверка 1: Строгая проверка типов return
+// Должна быть ошибка: функция возвращает integer, а должна boolean
+
+routine isPositive(n : integer) : boolean is
+  return n  // ОШИБКА: return type mismatch (integer вместо boolean)
+end
+
+routine Main() is
+  print isPositive(5)
+end
+

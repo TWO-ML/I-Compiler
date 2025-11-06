@@ -1,0 +1,22 @@
+// Комплексный тест всех трёх новых проверок
+
+type IntArray is array[3] integer
+
+routine add(a : integer, b : integer) : integer => a + b
+
+routine Main() is
+  var x : integer is 10
+  var y : real is 5.5
+  var arr : IntArray
+  
+  // Проверка 1: type mismatch в присваивании
+  x := y  // ОШИБКА: integer := real
+  
+  // Проверка 2: type mismatch в аргументах
+  print add(x, y)  // ОШИБКА: второй аргумент real вместо integer
+  
+  // Проверка 3: array bounds
+  arr[1] := 100  // OK
+  arr[5] := 200  // WARNING: out of bounds
+end
+
