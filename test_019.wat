@@ -107,18 +107,19 @@
     (call $print_i32 (i32.trunc_f64_s (local.get $value)))
   )
 
-    (func $square
-      (param $n i32)
-      (result i32)
-      (local $__temp_check i32)
-      local.get $n
-      local.get $n
-      i32.mul
-    )
     (func $Main
+      (local $x i32)
+      (local $x_1 i32)
       (local $__temp_check i32)
-      i32.const 6
-      call $square
+      i32.const 1
+      local.set $x
+      local.get $x_1
+      call $print_i32
+      i32.const 2
+      local.set $x_1
+      local.get $x_1
+      call $print_i32
+      local.get $x_1
       call $print_i32
       return
     )

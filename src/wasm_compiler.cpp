@@ -219,11 +219,14 @@ private:
         bool isArray = false;
         int arraySize = -1;
         string elemType;
+        int blockLevel = 0;
     };
     
     unordered_map<string, VarInfo> globalVars;
     vector<unordered_map<string, VarInfo>> localScopes;
     unordered_map<string, int> routineParams;
+    unordered_map<AST*, string> currentVarDeclToUniqueName;
+    int currentBlockLevel = 0;
     
     struct TypeDef {
         NodeKind kind;
@@ -372,106 +375,27 @@ public:
         emit("");
         
         buildTypeTable(root);
+        // Helper function to print i32 (simple)
         emit("  (func $print_i32 (param $value i32)");
         emit("    (local $buf i32)");
-        emit("    (local $len i32)");
-        emit("    (local $neg i32)");
-        emit("    (local $div i32)");
-        emit("    (local $rem i32)");
-        emit("    (local $pos i32)");
         emit("    (local.set $buf (i32.const 1024))");
-        emit("    (local.set $pos (i32.const 1024))");
-        emit("    (local.set $neg (i32.const 0))");
-        emit("    (if (i32.lt_s (local.get $value) (i32.const 0))");
-        emit("      (then");
-        emit("        (local.set $neg (i32.const 1))");
-        emit("        (local.set $value (i32.sub (i32.const 0) (local.get $value))))");
-        emit("    ))");
-        emit("    (if (i32.eq (local.get $value) (i32.const 0))");
-        emit("      (then");
-        emit("        (i32.store8 (local.get $pos) (i32.const 48))");
-        emit("        (local.set $pos (i32.add (local.get $pos) (i32.const 1))))");
-        emit("    ))");
-        emit("    (block $loop_end");
-        emit("      (loop $loop");
-        emit("        (if (i32.eq (local.get $value) (i32.const 0))");
-        emit("          (then (br $loop_end))");
-        emit("        ))");
-        emit("        (local.set $div (i32.div_u (local.get $value) (i32.const 10)))");
-        emit("        (local.set $rem (i32.rem_u (local.get $value) (i32.const 10)))");
-        emit("        (i32.store8 (local.get $pos) (i32.add (i32.const 48) (local.get $rem)))");
-        emit("        (local.set $pos (i32.add (local.get $pos) (i32.const 1)))");
-        emit("        (local.set $value (local.get $div))");
-        emit("        (br $loop)");
-        emit("      )");
-        emit("    ))");
-        emit("    (if (i32.eq (local.get $neg) (i32.const 1))");
-        emit("      (then");
-        emit("        (local.set $pos (i32.const 1024))");
-        emit("        (block $find_end)");
-        emit("          (loop $find)");
-        emit("            (if (i32.eq (i32.load8_u (local.get $pos)) (i32.const 0))");
-        emit("              (then (br $find_end))");
-        emit("            ))");
-        emit("            (local.set $pos (i32.add (local.get $pos) (i32.const 1)))");
-        emit("            (br $find)");
-        emit("          )");
-        emit("        ))");
-        emit("        (block $shift_end)");
-        emit("          (loop $shift)");
-        emit("            (if (i32.eq (local.get $pos) (i32.const 1024))");
-        emit("              (then (br $shift_end))");
-        emit("            ))");
-        emit("            (local.set $pos (i32.sub (local.get $pos) (i32.const 1)))");
-        emit("            (local.set $div (i32.load8_u (local.get $pos)))");
-        emit("            (local.set $rem (i32.add (local.get $pos) (i32.const 1)))");
-        emit("            (i32.store8 (local.get $rem) (local.get $div))");
-        emit("            (br $shift)");
-        emit("          )");
-        emit("        ))");
-        emit("        (i32.store8 (i32.const 1024) (i32.const 45))");
-        emit("      )");
-        emit("    ))");
-        emit("    (local.set $pos (i32.const 1024))");
-        emit("    (block $len_loop)");
-        emit("      (loop $len)");
-        emit("        (if (i32.eq (i32.load8_u (local.get $pos)) (i32.const 0))");
-        emit("          (then (br $len_loop))");
-        emit("        ))");
-        emit("        (local.set $pos (i32.add (local.get $pos) (i32.const 1)))");
-        emit("        (br $len)");
-        emit("      )");
-        emit("    ))");
-        emit("    (i32.store8 (local.get $pos) (i32.const 10))");
-        emit("    (local.set $len (i32.add (i32.const 1) (i32.sub (local.get $pos) (i32.const 1024))))");
-        emit("    (local.set $pos (i32.sub (local.get $pos) (i32.const 1)))");
-        emit("    (block $rev_end");
-        emit("      (loop $rev_loop");
-        emit("        (if (i32.le_u (local.get $buf) (local.get $pos))");
-        emit("          (then (br $rev_end))");
-        emit("        ))");
-        emit("        (local.set $div (i32.load8_u (local.get $buf)))");
-        emit("        (local.set $rem (i32.load8_u (local.get $pos)))");
-        emit("        (i32.store8 (local.get $buf) (local.get $rem))");
-        emit("        (i32.store8 (local.get $pos) (local.get $div))");
-        emit("        (local.set $buf (i32.add (local.get $buf) (i32.const 1)))");
-        emit("        (local.set $pos (i32.sub (local.get $pos) (i32.const 1)))");
-        emit("        (br $rev_loop)");
-        emit("      )");
-        emit("    ))");
-        emit("    (i32.store (i32.const 0) (i32.const 1024))");
-        emit("    (i32.store (i32.const 4) (local.get $len))");
+        emit("    (i32.store8");
+        emit("      (local.get $buf)");
+        emit("      (i32.add (i32.const 48) (local.get $value)))");
+        emit("    (i32.store8");
+        emit("      (i32.add (local.get $buf) (i32.const 1))");
+        emit("      (i32.const 10))");
+        emit("    (i32.store (i32.const 0) (local.get $buf))");
+        emit("    (i32.store (i32.const 4) (i32.const 2))");
         emit("    (i32.const 1)");
         emit("    (i32.const 0)");
         emit("    (i32.const 1)");
         emit("    (i32.const 8)");
-        emit("    (call $fd_write)");
+        emit("    call $fd_write");
         emit("    drop");
         emit("  )");
         emit("");
-        emit("  ;; Helper function to print f64");
         emit("  (func $print_f64 (param $value f64)");
-        emit("    ;; For simplicity, convert to i32 and print (truncate)");
         emit("    (call $print_i32 (i32.trunc_f64_s (local.get $value)))");
         emit("  )");
         emit("");
@@ -607,7 +531,6 @@ public:
             }
             case NodeKind::Call: {
                 string funcName = expr->text;
-                emitIndent(indent, ";; call " + funcName);
                 for (auto& arg : expr->kids) {
                     compileExpression(arg.get(), indent);
                 }
@@ -621,15 +544,19 @@ public:
                     AST* varDeclNode = nullptr;
                     for (int i = localScopes.size() - 1; i >= 0; i--) {
                         if (localScopes[i].count(varName)) {
-                            var = &localScopes[i][varName];
-                            break;
+                            VarInfo* candidate = &localScopes[i][varName];
+                            if (!var || candidate->blockLevel <= currentBlockLevel) {
+                                var = candidate;
+                                if (candidate->blockLevel == currentBlockLevel) {
+                                    break;
+                                }
+                            }
                         }
                     }
                     if (!var && globalVars.count(varName)) {
                         var = &globalVars[varName];
                     }
                     
-                    // Find VarDecl node
                     if (var && rootAST) {
                         varDeclNode = findVarDeclInAST(varName, rootAST);
                     }
@@ -638,7 +565,7 @@ public:
                         if (var->isGlobal) {
                             emitIndent(indent, "global.get $" + varName);
                         } else {
-                            emitIndent(indent, "local.get $" + varName);
+                            emitIndent(indent, "local.get $" + var->name);
                         }
                         
                         for (size_t i = 1; i < expr->kids.size(); i++) {
@@ -875,7 +802,7 @@ public:
                                 if (var->isGlobal) {
                                     emitIndent(indent, "global.set $" + varName);
                                 } else {
-                                    emitIndent(indent, "local.set $" + varName);
+                                    emitIndent(indent, "local.set $" + var->name);
                                 }
                             }
                         }
@@ -896,25 +823,30 @@ public:
                 break;
             }
             case NodeKind::If: {
-                // Structural if: (if (then ...) (else ...))
                 compileExpression(stmt->kids[0].get(), indent);
                 emitIndent(indent, "(if");
                 
-                // Then branch
                 if (stmt->kids.size() > 1 && stmt->kids[1]->kind == NodeKind::Body) {
                     emitIndent(indent + 1, "(then");
+                    localScopes.push_back({});
+                    currentBlockLevel++;
                     for (auto& child : stmt->kids[1]->kids) {
                         compileStatement(child.get(), indent + 2);
                     }
+                    currentBlockLevel--;
+                    localScopes.pop_back();
                     emitIndent(indent + 1, ")");
                 }
                 
-                // Else branch
                 if (stmt->kids.size() > 2 && stmt->kids[2]->kind == NodeKind::Body) {
                     emitIndent(indent + 1, "(else");
+                    localScopes.push_back({});
+                    currentBlockLevel++;
                     for (auto& child : stmt->kids[2]->kids) {
                         compileStatement(child.get(), indent + 2);
                     }
+                    currentBlockLevel--;
+                    localScopes.pop_back();
                     emitIndent(indent + 1, ")");
                 }
                 
@@ -922,11 +854,9 @@ public:
                 break;
             }
             case NodeKind::While: {
-                // Structural while: (block $end (loop $loop ... br_if $end ... br $loop ...))
                 emitIndent(indent, "(block $end");
                 emitIndent(indent + 1, "(loop $loop");
                 
-                // Condition check
                 compileExpression(stmt->kids[0].get(), indent + 2);
                 emitIndent(indent + 2, "i32.eqz");
                 emitIndent(indent + 2, "br_if $end");
@@ -944,13 +874,11 @@ public:
                 break;
             }
             case NodeKind::For: {
-                // for Identifier in Range [ reverse ] loop Body end
                 if (stmt->kids.size() < 2) break;
                 
                 string loopVarName = stmt->text;
                 bool isReverse = false;
                 
-                // Check for reverse
                 for (size_t i = 1; i < stmt->kids.size(); i++) {
                     if (stmt->kids[i]->kind == NodeKind::Name && stmt->kids[i]->text == "reverse") {
                         isReverse = true;
@@ -958,26 +886,20 @@ public:
                     }
                 }
                 
-                // Range: Expression [ .. Expression ] or single Expression (array)
                 AST* rangeNode = stmt->kids[0].get();
                 
                 if (rangeNode->kind == NodeKind::Expr && rangeNode->text == "..") {
                     // Range with two expressions - structural loop
                     if (rangeNode->kids.size() >= 2) {
-                        // Note: loop variable and temp locals should be declared in function header
-                        // For now, we assume they are already declared
                         string startLocal = "$start_" + loopVarName;
                         string endLocal = "$end_" + loopVarName;
                         
-                        // Evaluate and store start value
                         compileExpression(rangeNode->kids[0].get(), indent);
                         emitIndent(indent, "local.set " + startLocal);
                         
-                        // Evaluate and store end value
                             compileExpression(rangeNode->kids[1].get(), indent);
                         emitIndent(indent, "local.set " + endLocal);
                         
-                        // Initialize loop variable
                         if (isReverse) {
                             emitIndent(indent, "local.get " + endLocal);
                         } else {
@@ -985,11 +907,9 @@ public:
                         }
                         emitIndent(indent, "local.set $" + loopVarName);
                         
-                        // Structural loop: (block $end (loop $loop ...))
                         emitIndent(indent, "(block $end");
                         emitIndent(indent + 1, "(loop $loop");
                         
-                        // Check condition
                         emitIndent(indent + 2, "local.get $" + loopVarName);
                         if (isReverse) {
                             emitIndent(indent + 2, "local.get " + startLocal);
@@ -1000,7 +920,6 @@ public:
                         }
                         emitIndent(indent + 2, "br_if $end");
                         
-                        // Body
                         AST* bodyNode = nullptr;
                         for (size_t i = 1; i < stmt->kids.size(); i++) {
                             if (stmt->kids[i]->kind == NodeKind::Body) {
@@ -1014,7 +933,6 @@ public:
                             }
                         }
                         
-                        // Increment/decrement
                         emitIndent(indent + 2, "local.get $" + loopVarName);
                         if (isReverse) {
                             emitIndent(indent + 2, "i32.const 1");
@@ -1029,47 +947,38 @@ public:
                         emitIndent(indent, ")");
                     }
                 } else {
-                    // Single expression (array iteration) - structural loop
                     string arrBase = "$arr_base_" + loopVarName;
                     string arrSize = "$arr_size_" + loopVarName;
                     string idx = "$idx_" + loopVarName;
                     
-                    // Get array base address
                     compileExpression(rangeNode, indent);
                     emitIndent(indent, "local.set " + arrBase);
                     
-                    // Get array size (stored at arr_base - 4)
                     emitIndent(indent, "local.get " + arrBase);
                     emitIndent(indent, "i32.const 4");
                     emitIndent(indent, "i32.sub");
                     emitIndent(indent, "i32.load");
                     emitIndent(indent, "local.set " + arrSize);
                     
-                    // Initialize index to 0 (will be converted to 1-based in loop)
                     emitIndent(indent, "i32.const 0");
                     emitIndent(indent, "local.set " + idx);
                     
-                    // Structural loop: (block $end (loop $loop ...))
                     emitIndent(indent, "(block $end");
                     emitIndent(indent + 1, "(loop $loop");
                     
-                    // Check if index >= size
                     emitIndent(indent + 2, "local.get " + idx);
                     emitIndent(indent + 2, "local.get " + arrSize);
                     emitIndent(indent + 2, "i32.ge_u");
                     emitIndent(indent + 2, "br_if $end");
                     
-                    // Get array element value (for v in array)
-                    // Calculate element address: arr_base + idx * elem_size
                     emitIndent(indent + 2, "local.get " + arrBase);
                     emitIndent(indent + 2, "local.get " + idx);
-                    emitIndent(indent + 2, "i32.const 4");  // Assume i32 elements (4 bytes)
+                    emitIndent(indent + 2, "i32.const 4");
                     emitIndent(indent + 2, "i32.mul");
                     emitIndent(indent + 2, "i32.add");
                     emitIndent(indent + 2, "i32.load");
                     emitIndent(indent + 2, "local.set $" + loopVarName);
                     
-                    // Body
                     AST* bodyNode = nullptr;
                     for (size_t i = 1; i < stmt->kids.size(); i++) {
                         if (stmt->kids[i]->kind == NodeKind::Body) {
@@ -1083,7 +992,6 @@ public:
                         }
                     }
                     
-                    // Increment index
                     emitIndent(indent + 2, "local.get " + idx);
                     emitIndent(indent + 2, "i32.const 1");
                     emitIndent(indent + 2, "i32.add");
@@ -1113,7 +1021,20 @@ public:
                 break;
             }
             case NodeKind::VarDecl: {
-                compileVarDecl(stmt, indent);
+                string varName = stmt->text;
+                AST* varDeclNode = stmt;
+                string actualVarName = currentVarDeclToUniqueName.count(varDeclNode) ? currentVarDeclToUniqueName[varDeclNode] : varName;
+                VarInfo* var = nullptr;
+                for (int i = localScopes.size() - 1; i >= 0; i--) {
+                    if (localScopes[i].count(varName)) {
+                        var = &localScopes[i][varName];
+                        break;
+                    }
+                }
+                if (var && stmt->kids.size() > 1) {
+                    compileExpression(stmt->kids[1].get(), indent);
+                    emitIndent(indent, "local.set $" + actualVarName);
+                }
                 break;
             }
             default:
@@ -1121,7 +1042,6 @@ public:
         }
     }
     
-    // Helper: collect variable info from VarDecl (for local variables)
     VarInfo collectVarInfo(AST* varDecl) {
         VarInfo var;
         if (varDecl->kind != NodeKind::VarDecl) return var;
@@ -1129,18 +1049,15 @@ public:
         string varName = varDecl->text;
         var.name = varName;
         
-        // Determine type
         if (varDecl->kids.size() > 0) {
             AST* typeNode = varDecl->kids[0].get();
             if (typeNode->kind == NodeKind::PrimType) {
                 var.type = getWASMType(typeNode->text);
             } else if (typeNode->kind == NodeKind::ArrayType) {
                 var.isArray = true;
-                // Get array size
                 if (typeNode->kids.size() >= 1) {
                     AST* sizeNode = typeNode->kids[0].get();
                     if (sizeNode && sizeNode->kind == NodeKind::Primary) {
-                        // Try to parse size as integer
                         try {
                             var.arraySize = stoi(sizeNode->text);
                         } catch (...) {
@@ -1154,18 +1071,15 @@ public:
                         var.elemType = getWASMType(elemType->text);
                     }
                 }
-                var.type = "i32";  // Array base address
+                var.type = "i32";
             } else if (typeNode->kind == NodeKind::UserType) {
-                // Resolve user-defined type from type table
                 string resolvedType = resolveUserType(typeNode->text);
                 var.type = resolvedType;
             } else if (typeNode->kind == NodeKind::RecordType) {
-                // Record type - store as i32 pointer
                 var.type = "i32";
             }
         }
         
-        // Ensure type is set (default to i32 if not determined)
         if (var.type.empty()) {
             var.type = "i32";
         }
@@ -1179,7 +1093,6 @@ public:
         string varName = varDecl->text;
         VarInfo var = collectVarInfo(varDecl);
         
-        // Check if global or local
         bool isGlobal = (localScopes.size() == 1);
         
         if (isGlobal) {
@@ -1187,45 +1100,48 @@ public:
             globalVars[varName] = var;
             emitIndent(indent, "(global $" + varName + " (mut " + var.type + ")");
             if (varDecl->kids.size() > 1) {
-                // Has initializer
                 compileExpression(varDecl->kids[1].get(), indent + 1);
             } else {
                 emitIndent(indent + 1, var.type + ".const 0");
             }
             emitIndent(indent, ")");
         } else {
-            // For local variables, we only register them here
-            // They will be declared in function header
             var.isGlobal = false;
             var.localIndex = localCounter++;
             localScopes.back()[varName] = var;
-            // Store the VarDecl AST for later initialization
-            // (We'll handle initialization in compileRoutine)
         }
     }
     
-    // Collect all VarDecl nodes from a body
-    void collectLocalVars(AST* body, vector<AST*>& varDecls) {
+    void collectLocalVars(AST* body, vector<pair<AST*, int>>& varDeclsWithLevel, int blockLevel = 0) {
         if (!body) return;
         if (body->kind == NodeKind::Body) {
             for (auto& child : body->kids) {
                 if (child->kind == NodeKind::VarDecl) {
-                    varDecls.push_back(child.get());
+                    varDeclsWithLevel.push_back({child.get(), blockLevel});
                 } else if (child->kind == NodeKind::Body) {
-                    collectLocalVars(child.get(), varDecls);
+                    collectLocalVars(child.get(), varDeclsWithLevel, blockLevel);
+                } else if (child->kind == NodeKind::If || child->kind == NodeKind::While) {
+                    for (size_t i = 1; i < child->kids.size(); i++) {
+                        if (child->kids[i]->kind == NodeKind::Body) {
+                            collectLocalVars(child->kids[i].get(), varDeclsWithLevel, blockLevel + 1);
+                        }
+                    }
                 }
             }
         }
     }
     
-    // Collect for loop variables that need to be declared
+    string getUniqueVarName(const string& baseName, int blockLevel) {
+        if (blockLevel == 0) return baseName;
+        return baseName + "_" + to_string(blockLevel);
+    }
+    
     void collectForLoopVars(AST* body, unordered_set<string>& forLoopVars) {
         if (!body) return;
         if (body->kind == NodeKind::Body) {
             for (auto& child : body->kids) {
                 if (child->kind == NodeKind::For) {
                     forLoopVars.insert(child->text);
-                    // Also check body of for loop
                     for (size_t i = 1; i < child->kids.size(); i++) {
                         if (child->kids[i]->kind == NodeKind::Body) {
                             collectForLoopVars(child->kids[i].get(), forLoopVars);
@@ -1249,10 +1165,8 @@ public:
         
         emitIndent(indent, "(func $" + funcName);
         
-        // Reset memory offset for this function (each function gets its own memory region)
         memoryOffset = 2048;
-        
-        // Parameters
+        currentBlockLevel = 0;
         localScopes.push_back({});
         localCounter = 0;
         if (header->kids.size() > 0 && header->kids[0]->kind == NodeKind::Params) {
@@ -1277,40 +1191,47 @@ public:
             }
         }
         
-        // Return type
         string returnType = "";
-        size_t bodyIndex = 1;  // Body is usually at index 1 (after Params)
+        size_t bodyIndex = 1;
         if (header->kids.size() > 1 && header->kids[1]->kind == NodeKind::PrimType) {
             returnType = getWASMType(header->kids[1]->text);
             emitIndent(indent + 1, "(result " + returnType + ")");
-            bodyIndex = 2;  // If return type exists, body is at index 2
+            bodyIndex = 2;
         }
-        
-        // Collect all local variable declarations from body
-        vector<AST*> localVarDecls;
+        vector<pair<AST*, int>> localVarDeclsWithLevel;
         unordered_set<string> forLoopVars;
         if (header->kids.size() > bodyIndex) {
             AST* body = header->kids[bodyIndex].get();
             if (body->kind == NodeKind::RoutineBodyBlock) {
                 if (body->kids.size() > 0 && body->kids[0]->kind == NodeKind::Body) {
-                    collectLocalVars(body->kids[0].get(), localVarDecls);
+                    collectLocalVars(body->kids[0].get(), localVarDeclsWithLevel);
                     collectForLoopVars(body->kids[0].get(), forLoopVars);
                 }
             }
         }
         
-        // Declare all local variables in function header
-        for (AST* varDecl : localVarDecls) {
+        unordered_map<string, int> varNameCounters;
+        currentVarDeclToUniqueName.clear();
+        for (auto& [varDecl, blockLevel] : localVarDeclsWithLevel) {
             if (varDecl) {
+                string baseName = varDecl->text;
+                int counter = 0;
+                if (varNameCounters.count(baseName)) {
+                    counter = varNameCounters[baseName];
+                }
+                varNameCounters[baseName] = counter + 1;
+                string uniqueName = (counter == 0) ? baseName : (baseName + "_" + to_string(counter));
+                currentVarDeclToUniqueName[varDecl] = uniqueName;
                 VarInfo var = collectVarInfo(varDecl);
+                var.name = uniqueName;
+                var.blockLevel = blockLevel;
                 var.isGlobal = false;
                 var.localIndex = localCounter++;
-                localScopes.back()[var.name] = var;
-                emitIndent(indent + 1, "(local $" + var.name + " " + var.type + ")");
+                localScopes.back()[baseName] = var;
+                emitIndent(indent + 1, "(local $" + uniqueName + " " + var.type + ")");
             }
         }
         
-        // Declare for loop variables and their temp variables
         for (const string& loopVar : forLoopVars) {
             VarInfo var;
             var.name = loopVar;
@@ -1320,7 +1241,6 @@ public:
             localScopes.back()[loopVar] = var;
             emitIndent(indent + 1, "(local $" + loopVar + " i32)");
             
-            // Also declare temp variables for range-based loops
             string startLocal = "start_" + loopVar;
             string endLocal = "end_" + loopVar;
             var.name = startLocal;
@@ -1332,7 +1252,6 @@ public:
             localScopes.back()[endLocal] = var;
             emitIndent(indent + 1, "(local $" + endLocal + " i32)");
             
-            // For array iteration loops, also declare array temp vars
             string arrBase = "arr_base_" + loopVar;
             string arrSize = "arr_size_" + loopVar;
             string idx = "idx_" + loopVar;
@@ -1350,9 +1269,6 @@ public:
             emitIndent(indent + 1, "(local $" + idx + " i32)");
         }
         
-        // Declare temp variable for boolean assignment check (if needed)
-        // We'll declare it only if we detect boolean assignments in the body
-        // For simplicity, always declare it
         VarInfo tempVar;
         tempVar.name = "__temp_check";
         tempVar.type = "i32";
@@ -1361,14 +1277,12 @@ public:
         localScopes.back()["__temp_check"] = tempVar;
         emitIndent(indent + 1, "(local $__temp_check i32)");
         
-        // Body - check in header (RoutineBodyBlock is added to RoutineHeader)
         if (header->kids.size() > bodyIndex) {
             AST* body = header->kids[bodyIndex].get();
             if (body->kind == NodeKind::RoutineBodyBlock) {
                 if (body->kids.size() > 0 && body->kids[0]->kind == NodeKind::Body) {
                     for (auto& stmt : body->kids[0]->kids) {
                         if (stmt->kind == NodeKind::VarDecl) {
-                            // Initialize local variable
                             string varName = stmt->text;
                             VarInfo* var = nullptr;
                             if (localScopes.back().count(varName)) {
@@ -1376,25 +1290,19 @@ public:
                             }
                             
                             AST* varDeclNode = stmt.get();
+                            string actualVarName = currentVarDeclToUniqueName.count(varDeclNode) ? currentVarDeclToUniqueName[varDeclNode] : (var ? var->name : varName);
                             
                             if (var && var->isArray && var->arraySize > 0) {
-                                // Array initialization: allocate memory and store size
-                                // Memory layout: [size: i32][data: array elements]
                                 int elemSize = (var->elemType == "f64") ? 8 : 4;
-                                int totalSize = 4 + (var->arraySize * elemSize);  // 4 bytes for size + data
-                                
-                                // Allocate memory
+                                int totalSize = 4 + (var->arraySize * elemSize);
                                 emitIndent(indent + 1, "i32.const " + to_string(memoryOffset + 4));
-                                emitIndent(indent + 1, "local.set $" + varName);
+                                emitIndent(indent + 1, "local.set $" + actualVarName);
                                 
-                                // Store array size at base address - 4
                                 emitIndent(indent + 1, "i32.const " + to_string(memoryOffset));
                                 emitIndent(indent + 1, "i32.const " + to_string(var->arraySize));
                                 emitIndent(indent + 1, "i32.store");
                                 
-                                // Update memory offset for next allocation
                                 memoryOffset += totalSize;
-                                // Align to 8 bytes
                                 memoryOffset = (memoryOffset + 7) & ~7;
                             } else if (var && varDeclNode && varDeclNode->kids.size() > 0) {
                                 AST* typeNode = varDeclNode->kids[0].get();
@@ -1413,8 +1321,6 @@ public:
                                 }
                                 
                                 if (isRecord && recordTypeNode) {
-                                    // Record initialization: allocate memory
-                                    // Calculate record size
                                     int recordSize = 0;
                                     for (auto& child : recordTypeNode->kids) {
                                         if (child->kind == NodeKind::VarDecl && child->kids.size() > 0) {
@@ -1432,19 +1338,17 @@ public:
                                     
                                     if (recordSize > 0) {
                                         emitIndent(indent + 1, "i32.const " + to_string(memoryOffset));
-                                        emitIndent(indent + 1, "local.set $" + varName);
+                                        emitIndent(indent + 1, "local.set $" + actualVarName);
                                         memoryOffset += recordSize;
                                         memoryOffset = (memoryOffset + 7) & ~7;
                                     }
                                 } else if (stmt->kids.size() > 1) {
-                                    // Regular variable with initializer
                                     compileExpression(stmt->kids[1].get(), indent + 1);
-                                    emitIndent(indent + 1, "local.set $" + varName);
+                                    emitIndent(indent + 1, "local.set $" + actualVarName);
                                 }
                             } else if (stmt->kids.size() > 1) {
-                                // Regular variable with initializer
                                 compileExpression(stmt->kids[1].get(), indent + 1);
-                                emitIndent(indent + 1, "local.set $" + stmt->text);
+                                emitIndent(indent + 1, "local.set $" + actualVarName);
                             }
                         } else {
                             compileStatement(stmt.get(), indent + 1);
@@ -1460,6 +1364,7 @@ public:
         
         if (returnType.empty()) {
             emitIndent(indent + 1, "return");
+        } else {
         }
         
         localScopes.pop_back();
@@ -1467,7 +1372,6 @@ public:
     }
 };
 
-// Helper function to get node kind name (needed for parser integration)
 string tokenKindName(TokenKind k) {
     switch (k) {
 #define C(x) case TokenKind::x: return #x;
@@ -1486,9 +1390,6 @@ string tokenKindName(TokenKind k) {
     return "?";
 }
 
-// Include the full parser implementation
-// For brevity, we'll include a simplified version that has the essential parsing methods
-// In production, you would include the full parser from parser.cpp
 
 struct Parser {
     Lexer &L;
@@ -2004,8 +1905,6 @@ struct Parser {
 };
 
 // Include SemanticAnalyzer class from semantic_analyzer.cpp
-// This is a large class (1144 lines) that performs semantic analysis and optimizations
-// We include it here to enable semantic checking before WASM compilation
 
 class SemanticAnalyzer {
 private:
