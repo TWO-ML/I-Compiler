@@ -226,6 +226,14 @@ private:
     vector<unordered_map<string, VarInfo>> localScopes;
     unordered_map<string, int> routineParams;  // routine name -> param count
     
+    // Type table for resolving user-defined types
+    struct TypeDef {
+        NodeKind kind;  // PrimType, ArrayType, RecordType, UserType
+        string baseType;  // For UserType, the resolved base type name
+        AST* typeNode;  // Pointer to the type definition AST node
+    };
+    unordered_map<string, TypeDef> typeTable;
+    
     string getWASMType(const string& piType) {
         if (piType == "integer") return "i32";
         if (piType == "real") return "f64";
@@ -252,6 +260,38 @@ private:
         return "i32";
     }
     
+    // Build type table from AST
+    void buildTypeTable(AST* root) {
+        if (!root) return;
+        if (root->kind == NodeKind::TypeDecl && !root->kids.empty()) {
+            TypeDef td;
+            td.typeNode = root->kids[0].get();
+            td.kind = td.typeNode->kind;
+            typeTable[root->text] = td;
+        }
+        for (auto& child : root->kids) {
+            buildTypeTable(child.get());
+        }
+    }
+    
+    // Resolve user-defined type recursively
+    string resolveUserType(const string& typeName) {
+        if (typeTable.count(typeName)) {
+            TypeDef& td = typeTable[typeName];
+            if (td.kind == NodeKind::PrimType) {
+                return getWASMType(td.typeNode->text);
+            } else if (td.kind == NodeKind::UserType) {
+                // Recursively resolve
+                return resolveUserType(td.typeNode->text);
+            } else if (td.kind == NodeKind::ArrayType) {
+                return "i32";  // Array base address
+            } else if (td.kind == NodeKind::RecordType) {
+                return "i32";  // Record pointer
+            }
+        }
+        return "i32";  // Default fallback
+    }
+    
 public:
     string compile(AST* root) {
         wat.str("");
@@ -264,18 +304,121 @@ public:
         emit("  (memory 1)");
         emit("  (export \"memory\" (memory 0))");
         emit("");
-        emit("  ;; Helper function to print i32");
+        
+        // Build type table first
+        buildTypeTable(root);
+        
+        // Helper function to convert i32 to string and print
         emit("  (func $print_i32 (param $value i32)");
         emit("    (local $buf i32)");
-        emit("    (local.set $buf (i32.const 0))");
-        emit("    ;; Simple implementation: store value in memory and print");
-        emit("    ;; TODO: Implement proper number-to-string conversion");
-        emit("    i32.const 1  ;; stdout");
-        emit("    i32.const 0  ;; iovs pointer");
-        emit("    i32.const 1  ;; iovs_len");
-        emit("    i32.const 0  ;; nwritten pointer");
-        emit("    call $fd_write");
+        emit("    (local $len i32)");
+        emit("    (local $neg i32)");
+        emit("    (local $div i32)");
+        emit("    (local $rem i32)");
+        emit("    (local $pos i32)");
+        emit("    ;; Allocate buffer at memory offset 1024");
+        emit("    (local.set $buf (i32.const 1024))");
+        emit("    (local.set $pos (i32.const 1024))");
+        emit("    (local.set $neg (i32.const 0))");
+        emit("    ;; Handle negative numbers");
+        emit("    (if (i32.lt_s (local.get $value) (i32.const 0))");
+        emit("      (then");
+        emit("        (local.set $neg (i32.const 1))");
+        emit("        (local.set $value (i32.sub (i32.const 0) (local.get $value))))");
+        emit("    ))");
+        emit("    ;; Handle zero case");
+        emit("    (if (i32.eq (local.get $value) (i32.const 0))");
+        emit("      (then");
+        emit("        (i32.store8 (local.get $pos) (i32.const 48))");
+        emit("        (local.set $pos (i32.add (local.get $pos) (i32.const 1))))");
+        emit("    ))");
+        emit("    ;; Convert digits (reverse order)");
+        emit("    (block $loop_end");
+        emit("      (loop $loop");
+        emit("        (if (i32.eq (local.get $value) (i32.const 0))");
+        emit("          (then (br $loop_end))");
+        emit("        ))");
+        emit("        (local.set $div (i32.div_u (local.get $value) (i32.const 10)))");
+        emit("        (local.set $rem (i32.rem_u (local.get $value) (i32.const 10)))");
+        emit("        (i32.store8 (local.get $pos) (i32.add (i32.const 48) (local.get $rem)))");
+        emit("        (local.set $pos (i32.add (local.get $pos) (i32.const 1)))");
+        emit("        (local.set $value (local.get $div))");
+        emit("        (br $loop)");
+        emit("      )");
+        emit("    ))");
+        emit("    ;; Add minus sign if negative (at start, after reverse)");
+        emit("    (if (i32.eq (local.get $neg) (i32.const 1))");
+        emit("      (then");
+        emit("        ;; Shift string right by 1 byte to make room for minus");
+        emit("        (local.set $pos (i32.const 1024))");
+        emit("        (block $find_end)");
+        emit("          (loop $find)");
+        emit("            (if (i32.eq (i32.load8_u (local.get $pos)) (i32.const 0))");
+        emit("              (then (br $find_end))");
+        emit("            ))");
+        emit("            (local.set $pos (i32.add (local.get $pos) (i32.const 1)))");
+        emit("            (br $find)");
+        emit("          )");
+        emit("        ))");
+        emit("        (block $shift_end)");
+        emit("          (loop $shift)");
+        emit("            (if (i32.eq (local.get $pos) (i32.const 1024))");
+        emit("              (then (br $shift_end))");
+        emit("            ))");
+        emit("            (local.set $pos (i32.sub (local.get $pos) (i32.const 1)))");
+        emit("            (local.set $div (i32.load8_u (local.get $pos)))");
+        emit("            (local.set $rem (i32.add (local.get $pos) (i32.const 1)))");
+        emit("            (i32.store8 (local.get $rem) (local.get $div))");
+        emit("            (br $shift)");
+        emit("          )");
+        emit("        ))");
+        emit("        (i32.store8 (i32.const 1024) (i32.const 45))");
+        emit("      )");
+        emit("    ))");
+        emit("    ;; Add newline");
+        emit("    (local.set $pos (i32.const 1024))");
+        emit("    (block $len_loop)");
+        emit("      (loop $len)");
+        emit("        (if (i32.eq (i32.load8_u (local.get $pos)) (i32.const 0))");
+        emit("          (then (br $len_loop))");
+        emit("        ))");
+        emit("        (local.set $pos (i32.add (local.get $pos) (i32.const 1)))");
+        emit("        (br $len)");
+        emit("      )");
+        emit("    ))");
+        emit("    (i32.store8 (local.get $pos) (i32.const 10))");
+        emit("    (local.set $len (i32.add (i32.const 1) (i32.sub (local.get $pos) (i32.const 1024))))");
+        emit("    ;; Reverse the string (digits were stored in reverse)");
+        emit("    (local.set $pos (i32.sub (local.get $pos) (i32.const 1)))");
+        emit("    (block $rev_end");
+        emit("      (loop $rev_loop");
+        emit("        (if (i32.le_u (local.get $buf) (local.get $pos))");
+        emit("          (then (br $rev_end))");
+        emit("        ))");
+        emit("        (local.set $div (i32.load8_u (local.get $buf)))");
+        emit("        (local.set $rem (i32.load8_u (local.get $pos)))");
+        emit("        (i32.store8 (local.get $buf) (local.get $rem))");
+        emit("        (i32.store8 (local.get $pos) (local.get $div))");
+        emit("        (local.set $buf (i32.add (local.get $buf) (i32.const 1)))");
+        emit("        (local.set $pos (i32.sub (local.get $pos) (i32.const 1)))");
+        emit("        (br $rev_loop)");
+        emit("      )");
+        emit("    ))");
+        emit("    ;; Write to stdout using fd_write");
+        emit("    (i32.store (i32.const 0) (i32.const 1024))  ;; iovs[0].buf");
+        emit("    (i32.store (i32.const 4) (local.get $len))  ;; iovs[0].len");
+        emit("    (i32.const 1)  ;; stdout");
+        emit("    (i32.const 0)  ;; iovs pointer");
+        emit("    (i32.const 1)  ;; iovs_len");
+        emit("    (i32.const 8)  ;; nwritten pointer");
+        emit("    (call $fd_write)");
         emit("    drop");
+        emit("  )");
+        emit("");
+        emit("  ;; Helper function to print f64");
+        emit("  (func $print_f64 (param $value f64)");
+        emit("    ;; For simplicity, convert to i32 and print (truncate)");
+        emit("    (call $print_i32 (i32.trunc_f64_s (local.get $value)))");
         emit("  )");
         emit("");
         
@@ -382,7 +525,7 @@ public:
                     if (expr->text == "*") {
                         emitIndent(indent, opType + ".mul");
                     } else if (expr->text == "/") {
-                        emitIndent(indent, opType + ".div_" + (opType == "f64" ? "s" : "s"));
+                        emitIndent(indent, opType == "f64" ? "f64.div" : "i32.div_s");
                     } else {
                         emitIndent(indent, "i32.rem_s");
                     }
@@ -397,13 +540,13 @@ public:
                 string opType = (type1 == "f64" || type2 == "f64") ? "f64" : "i32";
                 
                 if (expr->text == "<") {
-                    emitIndent(indent, opType + ".lt_" + (opType == "f64" ? "s" : "s"));
+                    emitIndent(indent, opType == "f64" ? "f64.lt" : "i32.lt_s");
                 } else if (expr->text == "<=") {
-                    emitIndent(indent, opType + ".le_" + (opType == "f64" ? "s" : "s"));
+                    emitIndent(indent, opType == "f64" ? "f64.le" : "i32.le_s");
                 } else if (expr->text == ">") {
-                    emitIndent(indent, opType + ".gt_" + (opType == "f64" ? "s" : "s"));
+                    emitIndent(indent, opType == "f64" ? "f64.gt" : "i32.gt_s");
                 } else if (expr->text == ">=") {
-                    emitIndent(indent, opType + ".ge_" + (opType == "f64" ? "s" : "s"));
+                    emitIndent(indent, opType == "f64" ? "f64.ge" : "i32.ge_s");
                 } else if (expr->text == "=") {
                     emitIndent(indent, opType + ".eq");
                 } else if (expr->text == "/=") {
@@ -443,10 +586,12 @@ public:
                             emitIndent(indent, "local.get $" + varName);
                         }
                         
-                        // Handle indexing
+                        // Handle indexing (convert from 1-based to 0-based)
                         for (size_t i = 1; i < expr->kids.size(); i++) {
                             if (expr->kids[i]->kind == NodeKind::Index) {
                                 compileExpression(expr->kids[i]->kids[0].get(), indent);
+                                emitIndent(indent, "i32.const 1");
+                                emitIndent(indent, "i32.sub");  // Convert 1-based to 0-based
                                 emitIndent(indent, "i32.add");
                                 emitIndent(indent, "i32.load");
                             }
@@ -525,9 +670,11 @@ public:
                         
                         if (var) {
                             if (lhs->kids.size() > 1 && lhs->kids[1]->kind == NodeKind::Index) {
-                                // Array assignment
+                                // Array assignment (convert from 1-based to 0-based)
                                 compileExpression(nameNode, indent);  // base address
                                 compileExpression(lhs->kids[1]->kids[0].get(), indent);  // index
+                                emitIndent(indent, "i32.const 1");
+                                emitIndent(indent, "i32.sub");  // Convert 1-based to 0-based
                                 emitIndent(indent, "i32.add");
                                 emitIndent(indent, "i32.store");
                             } else {
@@ -544,58 +691,63 @@ public:
             }
             case NodeKind::Print: {
                 for (auto& expr : stmt->kids) {
-                    compileExpression(expr.get(), indent);
-                    // Print using WASI fd_write
-                    // Stack: value
-                    // We need to convert to string and write to stdout
-                    // For simplicity, we'll print numbers directly
-                    // TODO: Implement proper string conversion
-                    emitIndent(indent, "call $print_i32");
+                    string exprType = compileExpression(expr.get(), indent);
+                    // Print based on type
+                    if (exprType == "f64") {
+                        emitIndent(indent, "call $print_f64");
+                    } else {
+                        // i32 or boolean (both are i32 in WASM)
+                        emitIndent(indent, "call $print_i32");
+                    }
                 }
                 break;
             }
             case NodeKind::If: {
-                string elseLabel = newLabel();
-                string endLabel = newLabel();
-                
+                // Structural if: (if (then ...) (else ...))
                 compileExpression(stmt->kids[0].get(), indent);
-                emitIndent(indent, "i32.eqz");
-                emitIndent(indent, "br_if $" + elseLabel);
+                emitIndent(indent, "(if");
                 
                 // Then branch
                 if (stmt->kids.size() > 1 && stmt->kids[1]->kind == NodeKind::Body) {
+                    emitIndent(indent + 1, "(then");
                     for (auto& child : stmt->kids[1]->kids) {
-                        compileStatement(child.get(), indent);
+                        compileStatement(child.get(), indent + 2);
                     }
+                    emitIndent(indent + 1, ")");
                 }
-                emitIndent(indent, "br $" + endLabel);
-                emitIndent(indent, "$" + elseLabel + ":");
                 
                 // Else branch
                 if (stmt->kids.size() > 2 && stmt->kids[2]->kind == NodeKind::Body) {
+                    emitIndent(indent + 1, "(else");
                     for (auto& child : stmt->kids[2]->kids) {
-                        compileStatement(child.get(), indent);
+                        compileStatement(child.get(), indent + 2);
                     }
+                    emitIndent(indent + 1, ")");
                 }
-                emitIndent(indent, "$" + endLabel + ":");
+                
+                emitIndent(indent, ")");
                 break;
             }
             case NodeKind::While: {
-                string loopLabel = newLabel();
-                string endLabel = newLabel();
+                // Structural while: (block $end (loop $loop ... br_if $end ... br $loop ...))
+                emitIndent(indent, "(block $end");
+                emitIndent(indent + 1, "(loop $loop");
                 
-                emitIndent(indent, "$" + loopLabel + ":");
-                compileExpression(stmt->kids[0].get(), indent);
-                emitIndent(indent, "i32.eqz");
-                emitIndent(indent, "br_if $" + endLabel);
+                // Condition check
+                compileExpression(stmt->kids[0].get(), indent + 2);
+                emitIndent(indent + 2, "i32.eqz");
+                emitIndent(indent + 2, "br_if $end");
                 
+                // Body
                 if (stmt->kids.size() > 1 && stmt->kids[1]->kind == NodeKind::Body) {
                     for (auto& child : stmt->kids[1]->kids) {
-                        compileStatement(child.get(), indent);
+                        compileStatement(child.get(), indent + 2);
                     }
                 }
-                emitIndent(indent, "br $" + loopLabel);
-                emitIndent(indent, "$" + endLabel + ":");
+                
+                emitIndent(indent + 2, "br $loop");
+                emitIndent(indent + 1, ")");
+                emitIndent(indent, ")");
                 break;
             }
             case NodeKind::For: {
@@ -603,8 +755,6 @@ public:
                 if (stmt->kids.size() < 2) break;
                 
                 string loopVarName = stmt->text;
-                string loopLabel = newLabel();
-                string endLabel = newLabel();
                 bool isReverse = false;
                 
                 // Check for reverse
@@ -619,34 +769,43 @@ public:
                 AST* rangeNode = stmt->kids[0].get();
                 
                 if (rangeNode->kind == NodeKind::Expr && rangeNode->text == "..") {
-                    // Range with two expressions
+                    // Range with two expressions - structural loop
                     if (rangeNode->kids.size() >= 2) {
-                        // Evaluate start and end (simplified - assume constants for now)
-                        // TODO: Handle non-constant ranges
-                        emitIndent(indent, ";; for loop: " + loopVarName);
-                        emitIndent(indent, "(local $" + loopVarName + " i32)");
+                        // Note: loop variable and temp locals should be declared in function header
+                        // For now, we assume they are already declared
+                        string startLocal = "$start_" + loopVarName;
+                        string endLocal = "$end_" + loopVarName;
+                        
+                        // Evaluate and store start value
+                        compileExpression(rangeNode->kids[0].get(), indent);
+                        emitIndent(indent, "local.set " + startLocal);
+                        
+                        // Evaluate and store end value
+                        compileExpression(rangeNode->kids[1].get(), indent);
+                        emitIndent(indent, "local.set " + endLocal);
                         
                         // Initialize loop variable
-                        compileExpression(rangeNode->kids[0].get(), indent);
                         if (isReverse) {
-                            compileExpression(rangeNode->kids[1].get(), indent);
+                            emitIndent(indent, "local.get " + endLocal);
                         } else {
-                            compileExpression(rangeNode->kids[0].get(), indent);
+                            emitIndent(indent, "local.get " + startLocal);
                         }
                         emitIndent(indent, "local.set $" + loopVarName);
                         
-                        emitIndent(indent, "$" + loopLabel + ":");
+                        // Structural loop: (block $end (loop $loop ...))
+                        emitIndent(indent, "(block $end");
+                        emitIndent(indent + 1, "(loop $loop");
                         
                         // Check condition
-                        emitIndent(indent, "local.get $" + loopVarName);
+                        emitIndent(indent + 2, "local.get $" + loopVarName);
                         if (isReverse) {
-                            compileExpression(rangeNode->kids[0].get(), indent);
-                            emitIndent(indent, "i32.lt_s");
+                            emitIndent(indent + 2, "local.get " + startLocal);
+                            emitIndent(indent + 2, "i32.lt_s");
                         } else {
-                            compileExpression(rangeNode->kids[1].get(), indent);
-                            emitIndent(indent, "i32.gt_s");
+                            emitIndent(indent + 2, "local.get " + endLocal);
+                            emitIndent(indent + 2, "i32.gt_s");
                         }
-                        emitIndent(indent, "br_if $" + endLabel);
+                        emitIndent(indent + 2, "br_if $end");
                         
                         // Body
                         AST* bodyNode = nullptr;
@@ -658,33 +817,83 @@ public:
                         }
                         if (bodyNode) {
                             for (auto& child : bodyNode->kids) {
-                                compileStatement(child.get(), indent);
+                                compileStatement(child.get(), indent + 2);
                             }
                         }
                         
                         // Increment/decrement
-                        emitIndent(indent, "local.get $" + loopVarName);
+                        emitIndent(indent + 2, "local.get $" + loopVarName);
                         if (isReverse) {
-                            emitIndent(indent, "i32.const 1");
-                            emitIndent(indent, "i32.sub");
+                            emitIndent(indent + 2, "i32.const 1");
+                            emitIndent(indent + 2, "i32.sub");
                         } else {
-                            emitIndent(indent, "i32.const 1");
-                            emitIndent(indent, "i32.add");
+                            emitIndent(indent + 2, "i32.const 1");
+                            emitIndent(indent + 2, "i32.add");
                         }
-                        emitIndent(indent, "local.set $" + loopVarName);
-                        emitIndent(indent, "br $" + loopLabel);
-                        emitIndent(indent, "$" + endLabel + ":");
+                        emitIndent(indent + 2, "local.set $" + loopVarName);
+                        emitIndent(indent + 2, "br $loop");
+                        emitIndent(indent + 1, ")");
+                        emitIndent(indent, ")");
                     }
                 } else {
-                    // Single expression (array iteration) - simplified
-                    emitIndent(indent, ";; for loop over array: " + loopVarName);
-                    emitIndent(indent, "(local $" + loopVarName + " i32)");
-                    emitIndent(indent, "i32.const 1");
-                    emitIndent(indent, "local.set $" + loopVarName);
-                    emitIndent(indent, "$" + loopLabel + ":");
-                    // TODO: Implement array iteration
-                    emitIndent(indent, "br $" + endLabel);
-                    emitIndent(indent, "$" + endLabel + ":");
+                    // Single expression (array iteration) - structural loop
+                    string arrBase = "$arr_base_" + loopVarName;
+                    string arrSize = "$arr_size_" + loopVarName;
+                    string idx = "$idx_" + loopVarName;
+                    
+                    // Get array base address
+                    compileExpression(rangeNode, indent);
+                    emitIndent(indent, "local.set " + arrBase);
+                    
+                    // Get array size (assume stored at arr_base - 4)
+                    emitIndent(indent, "local.get " + arrBase);
+                    emitIndent(indent, "i32.const 4");
+                    emitIndent(indent, "i32.sub");
+                    emitIndent(indent, "i32.load");
+                    emitIndent(indent, "local.set " + arrSize);
+                    
+                    // Initialize index to 0 (will be converted to 1-based in loop)
+                    emitIndent(indent, "i32.const 0");
+                    emitIndent(indent, "local.set " + idx);
+                    
+                    // Structural loop: (block $end (loop $loop ...))
+                    emitIndent(indent, "(block $end");
+                    emitIndent(indent + 1, "(loop $loop");
+                    
+                    // Check if index >= size
+                    emitIndent(indent + 2, "local.get " + idx);
+                    emitIndent(indent + 2, "local.get " + arrSize);
+                    emitIndent(indent + 2, "i32.ge_u");
+                    emitIndent(indent + 2, "br_if $end");
+                    
+                    // Set loop variable to current index (1-based)
+                    emitIndent(indent + 2, "local.get " + idx);
+                    emitIndent(indent + 2, "i32.const 1");
+                    emitIndent(indent + 2, "i32.add");
+                    emitIndent(indent + 2, "local.set $" + loopVarName);
+                    
+                    // Body
+                    AST* bodyNode = nullptr;
+                    for (size_t i = 1; i < stmt->kids.size(); i++) {
+                        if (stmt->kids[i]->kind == NodeKind::Body) {
+                            bodyNode = stmt->kids[i].get();
+                            break;
+                        }
+                    }
+                    if (bodyNode) {
+                        for (auto& child : bodyNode->kids) {
+                            compileStatement(child.get(), indent + 2);
+                        }
+                    }
+                    
+                    // Increment index
+                    emitIndent(indent + 2, "local.get " + idx);
+                    emitIndent(indent + 2, "i32.const 1");
+                    emitIndent(indent + 2, "i32.add");
+                    emitIndent(indent + 2, "local.set " + idx);
+                    emitIndent(indent + 2, "br $loop");
+                    emitIndent(indent + 1, ")");
+                    emitIndent(indent, ")");
                 }
                 break;
             }
@@ -715,11 +924,12 @@ public:
         }
     }
     
-    void compileVarDecl(AST* varDecl, int indent) {
-        if (varDecl->kind != NodeKind::VarDecl) return;
+    // Helper: collect variable info from VarDecl (for local variables)
+    VarInfo collectVarInfo(AST* varDecl) {
+        VarInfo var;
+        if (varDecl->kind != NodeKind::VarDecl) return var;
         
         string varName = varDecl->text;
-        VarInfo var;
         var.name = varName;
         
         // Determine type
@@ -737,9 +947,9 @@ public:
                 }
                 var.type = "i32";  // Array base address
             } else if (typeNode->kind == NodeKind::UserType) {
-                // User-defined type - need to resolve it
-                // For now, default to i32 (should be resolved from type table)
-                var.type = "i32";
+                // Resolve user-defined type from type table
+                string resolvedType = resolveUserType(typeNode->text);
+                var.type = resolvedType;
             } else if (typeNode->kind == NodeKind::RecordType) {
                 // Record type - store as i32 pointer
                 var.type = "i32";
@@ -750,6 +960,15 @@ public:
         if (var.type.empty()) {
             var.type = "i32";
         }
+        
+        return var;
+    }
+    
+    void compileVarDecl(AST* varDecl, int indent) {
+        if (varDecl->kind != NodeKind::VarDecl) return;
+        
+        string varName = varDecl->text;
+        VarInfo var = collectVarInfo(varDecl);
         
         // Check if global or local
         bool isGlobal = (localScopes.size() == 1);
@@ -766,13 +985,46 @@ public:
             }
             emitIndent(indent, ")");
         } else {
+            // For local variables, we only register them here
+            // They will be declared in function header
             var.isGlobal = false;
             var.localIndex = localCounter++;
             localScopes.back()[varName] = var;
-            emitIndent(indent, "(local $" + varName + " " + var.type + ")");
-            if (varDecl->kids.size() > 1) {
-                compileExpression(varDecl->kids[1].get(), indent);
-                emitIndent(indent, "local.set $" + varName);
+            // Store the VarDecl AST for later initialization
+            // (We'll handle initialization in compileRoutine)
+        }
+    }
+    
+    // Collect all VarDecl nodes from a body
+    void collectLocalVars(AST* body, vector<AST*>& varDecls) {
+        if (!body) return;
+        if (body->kind == NodeKind::Body) {
+            for (auto& child : body->kids) {
+                if (child->kind == NodeKind::VarDecl) {
+                    varDecls.push_back(child.get());
+                } else if (child->kind == NodeKind::Body) {
+                    collectLocalVars(child.get(), varDecls);
+                }
+            }
+        }
+    }
+    
+    // Collect for loop variables that need to be declared
+    void collectForLoopVars(AST* body, unordered_set<string>& forLoopVars) {
+        if (!body) return;
+        if (body->kind == NodeKind::Body) {
+            for (auto& child : body->kids) {
+                if (child->kind == NodeKind::For) {
+                    forLoopVars.insert(child->text);
+                    // Also check body of for loop
+                    for (size_t i = 1; i < child->kids.size(); i++) {
+                        if (child->kids[i]->kind == NodeKind::Body) {
+                            collectForLoopVars(child->kids[i].get(), forLoopVars);
+                        }
+                    }
+                } else if (child->kind == NodeKind::Body) {
+                    collectForLoopVars(child.get(), forLoopVars);
+                }
             }
         }
     }
@@ -822,13 +1074,85 @@ public:
             bodyIndex = 2;  // If return type exists, body is at index 2
         }
         
+        // Collect all local variable declarations from body
+        vector<AST*> localVarDecls;
+        unordered_set<string> forLoopVars;
+        if (header->kids.size() > bodyIndex) {
+            AST* body = header->kids[bodyIndex].get();
+            if (body->kind == NodeKind::RoutineBodyBlock) {
+                if (body->kids.size() > 0 && body->kids[0]->kind == NodeKind::Body) {
+                    collectLocalVars(body->kids[0].get(), localVarDecls);
+                    collectForLoopVars(body->kids[0].get(), forLoopVars);
+                }
+            }
+        }
+        
+        // Declare all local variables in function header
+        for (AST* varDecl : localVarDecls) {
+            if (varDecl) {
+                VarInfo var = collectVarInfo(varDecl);
+                var.isGlobal = false;
+                var.localIndex = localCounter++;
+                localScopes.back()[var.name] = var;
+                emitIndent(indent + 1, "(local $" + var.name + " " + var.type + ")");
+            }
+        }
+        
+        // Declare for loop variables and their temp variables
+        for (const string& loopVar : forLoopVars) {
+            VarInfo var;
+            var.name = loopVar;
+            var.type = "i32";
+            var.isGlobal = false;
+            var.localIndex = localCounter++;
+            localScopes.back()[loopVar] = var;
+            emitIndent(indent + 1, "(local $" + loopVar + " i32)");
+            
+            // Also declare temp variables for range-based loops
+            string startLocal = "start_" + loopVar;
+            string endLocal = "end_" + loopVar;
+            var.name = startLocal;
+            var.localIndex = localCounter++;
+            localScopes.back()[startLocal] = var;
+            emitIndent(indent + 1, "(local $" + startLocal + " i32)");
+            var.name = endLocal;
+            var.localIndex = localCounter++;
+            localScopes.back()[endLocal] = var;
+            emitIndent(indent + 1, "(local $" + endLocal + " i32)");
+            
+            // For array iteration loops, also declare array temp vars
+            string arrBase = "arr_base_" + loopVar;
+            string arrSize = "arr_size_" + loopVar;
+            string idx = "idx_" + loopVar;
+            var.name = arrBase;
+            var.localIndex = localCounter++;
+            localScopes.back()[arrBase] = var;
+            emitIndent(indent + 1, "(local $" + arrBase + " i32)");
+            var.name = arrSize;
+            var.localIndex = localCounter++;
+            localScopes.back()[arrSize] = var;
+            emitIndent(indent + 1, "(local $" + arrSize + " i32)");
+            var.name = idx;
+            var.localIndex = localCounter++;
+            localScopes.back()[idx] = var;
+            emitIndent(indent + 1, "(local $" + idx + " i32)");
+        }
+        
         // Body - check in header (RoutineBodyBlock is added to RoutineHeader)
         if (header->kids.size() > bodyIndex) {
             AST* body = header->kids[bodyIndex].get();
             if (body->kind == NodeKind::RoutineBodyBlock) {
                 if (body->kids.size() > 0 && body->kids[0]->kind == NodeKind::Body) {
                     for (auto& stmt : body->kids[0]->kids) {
-                        compileStatement(stmt.get(), indent + 1);
+                        if (stmt->kind == NodeKind::VarDecl) {
+                            // Initialize local variable
+                            if (stmt->kids.size() > 1) {
+                                compileExpression(stmt->kids[1].get(), indent + 1);
+                                emitIndent(indent + 1, "local.set $" + stmt->text);
+                            }
+                        } else {
+                            compileStatement(stmt.get(), indent + 1);
+                        }
                     }
                 }
             } else if (body->kind == NodeKind::RoutineBodyExpr) {
@@ -1383,6 +1707,1257 @@ struct Parser {
     }
 };
 
+// Include SemanticAnalyzer class from semantic_analyzer.cpp
+// This is a large class (1144 lines) that performs semantic analysis and optimizations
+// We include it here to enable semantic checking before WASM compilation
+
+class SemanticAnalyzer {
+private:
+    vector<string> errors;
+    vector<string> warnings;
+    
+    struct Symbol {
+        string name;
+        string type;  // "integer", "real", "boolean", "routine", etc.
+        int line, col;
+        bool used = false;
+        bool isRoutine = false;
+        vector<string> paramTypes;  // for func
+        string returnType;          // for func
+    };
+    
+    vector<unordered_map<string, Symbol>> scopes;  // stack of visibility
+    int insideRoutineDepth = 0;  // depth of nested routines
+    
+    // table of symbols between traversals
+    unordered_map<string, bool> globalUsage;
+    
+    // Track for loop variables that are read-only
+    unordered_set<string> forLoopVariables;  // variables declared in for loops
+    
+    struct TypeInfo {
+        string kind = "unknown";
+        int arrayLen = -1;
+        string elemKind = "";
+    };
+    
+    unordered_map<string, TypeInfo> typeDefs;
+    unordered_map<string, vector<TypeInfo>> funcParamTypesTI;
+    unordered_map<string, TypeInfo> funcReturnTI;
+    vector<string> routineNameStack;
+    AST* rootAST = nullptr;
+    
+    // Track forward declarations and full definitions
+    unordered_map<string, bool> forwardDeclarations;  // routine name -> has body
+    unordered_map<string, bool> fullDefinitions;      // routine name -> has full definition
+    
+    // Stats of optimizing
+    int constantFoldingCount = 0;
+    int unreachableCodeCount = 0;
+    int ifSimplificationCount = 0;
+    int unusedVarCount = 0;
+    
+public:
+    // Main method of analysis
+    bool analyze(AST* root) {
+        
+        // Phase 1: Checks (without modifying AST)
+        scopes.clear();
+        scopes.push_back({});  // global scope
+        insideRoutineDepth = 0;
+        forLoopVariables.clear();  // Clear for loop variables tracking
+        forwardDeclarations.clear();
+        fullDefinitions.clear();
+        
+        rootAST = root;
+        buildTypeTable(root);
+        checkDeclarationsAndUsage(root);
+        checkSizelessArrays(root);
+        
+        // Check: all forward declarations must have corresponding full definitions
+        for (const auto& fwd : forwardDeclarations) {
+            if (!fullDefinitions.count(fwd.first)) {
+                addError(1, 1, "forward declaration of routine '" + fwd.first + 
+                    "' has no corresponding full definition");
+            }
+        } 
+
+        if (!errors.empty()) {
+            cerr << "\nSemantic errors:" << endl;
+            for (const auto& err : errors) {
+                cerr << "  " << err << endl;
+            }
+            return false;
+        }
+        cout << "\nSemantic checks passed" << endl;
+        
+        // Phase 2: Optimizations (modify AST)
+        
+        optimizeConstantFolding(root);
+        optimizeUnreachableCode(root);
+        optimizeIfSimplification(root);
+        optimizeUnusedVariables(root);
+        
+        printOptimizationStats();
+        
+        if (!warnings.empty()) {
+            cout << "\nWarnings:" << endl;
+            for (const auto& warn : warnings) {
+                cout << "  " << warn << endl;
+            }
+        }
+        return true;
+        
+    }
+
+    
+private:
+
+    TypeInfo typeFromTypeNode(AST* t) {
+        TypeInfo ti;
+        if (!t) return ti;
+
+        switch (t->kind) {
+            case NodeKind::PrimType:
+                ti.kind = t->text; // "integer"/"real"/"boolean"
+                return ti;
+
+            case NodeKind::UserType: {
+                ti.kind = t->text;
+                return ti;
+            }
+
+            case NodeKind::ArrayType: {
+                ti.kind = "array";
+                if (t->kids.size() == 2) {
+                    AST* sz = t->kids[0].get();
+                    AST* el = t->kids[1].get();
+                    if (sz && sz->kind == NodeKind::Primary && !sz->text.empty()) {
+                        bool neg = (sz->text[0] == '-' || sz->text[0] == '+');
+                        bool allDigits = true;
+                        for (size_t i = neg ? 1 : 0; i < sz->text.size(); ++i)
+                            if (!isdigit(sz->text[i])) { allDigits = false; break; }
+                        if (allDigits) ti.arrayLen = stoi(sz->text);
+                    }
+                    TypeInfo elem = typeFromTypeNode(el);
+                    ti.elemKind = elem.kind;
+                } else if (t->kids.size() == 1) {
+                    AST* el = t->kids[0].get();
+                    TypeInfo elem = typeFromTypeNode(el);
+                    ti.elemKind = elem.kind;
+                    ti.arrayLen = -1;
+                }
+                return ti;
+            }
+
+            case NodeKind::RecordType:
+                ti.kind = "record";
+                return ti;
+
+            default:
+                return ti;
+        }
+    }
+
+    void buildTypeTable(AST* n) {
+        if (!n) return;
+        if (n->kind == NodeKind::TypeDecl && !n->kids.empty()) {
+            TypeInfo ti = typeFromTypeNode(n->kids[0].get());
+            typeDefs[n->text] = ti;
+        }
+        for (auto& ch : n->kids) buildTypeTable(ch.get());
+    }
+
+    bool typesEqual(const TypeInfo& a, const TypeInfo& b) {
+        if (a.kind != b.kind) return false;
+        if (a.kind == "array") {
+            if (!(a.arrayLen == -1 || b.arrayLen == -1 || a.arrayLen == b.arrayLen)) return false;
+            return a.elemKind == b.elemKind;
+        }
+        return true;
+    }
+    
+    bool isCompatibleType(const TypeInfo& target, const TypeInfo& source) {
+        if (typesEqual(target, source)) return true;
+        
+        // integer := real (rounding to nearest)
+        if (target.kind == "integer") {
+            if (source.kind == "real" || source.kind == "boolean") {
+                return true;
+            }
+        }
+        
+        // real := integer (direct value copying)
+        if (target.kind == "real") {
+            if (source.kind == "integer" || source.kind == "boolean") {
+                return true;
+            }
+        }
+        
+        // boolean := integer (only 1->true, 0->false, but we allow it at compile time)
+        if (target.kind == "boolean") {
+            if (source.kind == "integer") {
+                return true;
+            }
+        }
+        
+        // For arrays: check element type compatibility recursively
+        if (target.kind == "array" && source.kind == "array") {
+            TypeInfo targetElem, sourceElem;
+            targetElem.kind = target.elemKind;
+            sourceElem.kind = source.elemKind;
+            
+            auto targetElemIt = typeDefs.find(targetElem.kind);
+            if (targetElemIt != typeDefs.end()) {
+                targetElem = targetElemIt->second;
+            }
+            auto sourceElemIt = typeDefs.find(sourceElem.kind);
+            if (sourceElemIt != typeDefs.end()) {
+                sourceElem = sourceElemIt->second;
+            }
+            
+            bool lengthCompatible = (target.arrayLen == -1 || source.arrayLen == -1 || 
+                                    target.arrayLen == source.arrayLen);
+            
+            if (lengthCompatible) {
+                return isCompatibleType(targetElem, sourceElem);
+            }
+        }
+        
+        // For user-defined types: expand and check recursively
+        if (target.kind != "unknown" && source.kind != "unknown" && 
+            target.kind != "array" && target.kind != "record" &&
+            source.kind != "array" && source.kind != "record" &&
+            target.kind != "integer" && target.kind != "real" && target.kind != "boolean" &&
+            source.kind != "integer" && source.kind != "real" && source.kind != "boolean") {
+            auto targetIt = typeDefs.find(target.kind);
+            auto sourceIt = typeDefs.find(source.kind);
+            
+            if (targetIt != typeDefs.end() && sourceIt != typeDefs.end()) {
+                return isCompatibleType(targetIt->second, sourceIt->second);
+            }
+        }
+        
+        // For records: check field-by-field compatibility recursively
+        if (target.kind != "unknown" && source.kind != "unknown" && rootAST) {
+            AST* targetTypeDecl = nullptr;
+            AST* sourceTypeDecl = nullptr;
+            
+            if (target.kind != "array" && target.kind != "record" && 
+                target.kind != "integer" && target.kind != "real" && target.kind != "boolean") {
+                targetTypeDecl = findTypeDecl(target.kind, rootAST);
+            }
+            
+            if (source.kind != "array" && source.kind != "record" &&
+                source.kind != "integer" && source.kind != "real" && source.kind != "boolean") {
+                sourceTypeDecl = findTypeDecl(source.kind, rootAST);
+            }
+            
+            if (targetTypeDecl && sourceTypeDecl) {
+                TypeInfo targetTI = typeFromTypeNode(targetTypeDecl->kids[0].get());
+                TypeInfo sourceTI = typeFromTypeNode(sourceTypeDecl->kids[0].get());
+                
+                if (targetTI.kind == "record" && sourceTI.kind == "record") {
+                    return areRecordsCompatible(targetTypeDecl, sourceTypeDecl, rootAST);
+                }
+            }
+        }
+        
+        return false;
+    }
+    
+    AST* findTypeDecl(const string& typeName, AST* root) {
+        if (!root) return nullptr;
+        if (root->kind == NodeKind::TypeDecl && root->text == typeName) {
+            return root;
+        }
+        for (auto& child : root->kids) {
+            AST* result = findTypeDecl(typeName, child.get());
+            if (result) return result;
+        }
+        return nullptr;
+    }
+    
+    bool areRecordsCompatible(AST* targetRecordDecl, AST* sourceRecordDecl, AST*) {
+        if (!targetRecordDecl || !sourceRecordDecl) return false;
+        
+        AST* targetRecordType = targetRecordDecl->kids.empty() ? nullptr : targetRecordDecl->kids[0].get();
+        AST* sourceRecordType = sourceRecordDecl->kids.empty() ? nullptr : sourceRecordDecl->kids[0].get();
+        
+        if (!targetRecordType || targetRecordType->kind != NodeKind::RecordType) return false;
+        if (!sourceRecordType || sourceRecordType->kind != NodeKind::RecordType) return false;
+        
+        unordered_map<string, TypeInfo> targetFields;
+        for (auto& child : targetRecordType->kids) {
+            if (child->kind == NodeKind::VarDecl && !child->kids.empty()) {
+                targetFields[child->text] = typeFromTypeNode(child->kids[0].get());
+            }
+        }
+        
+        unordered_map<string, TypeInfo> sourceFields;
+        for (auto& child : sourceRecordType->kids) {
+            if (child->kind == NodeKind::VarDecl && !child->kids.empty()) {
+                sourceFields[child->text] = typeFromTypeNode(child->kids[0].get());
+            }
+        }
+        
+        for (const auto& targetField : targetFields) {
+            auto sourceIt = sourceFields.find(targetField.first);
+            if (sourceIt == sourceFields.end()) {
+                return false;
+            }
+            if (!isCompatibleType(targetField.second, sourceIt->second)) {
+                return false;
+            }
+        }
+        
+        return true;
+    }
+    
+    TypeInfo getRecordFieldType(const string& recordTypeName, const string& fieldName, AST* root) {
+        TypeInfo ti;
+        if (!root) return ti;
+        
+        if (root->kind == NodeKind::TypeDecl && root->text == recordTypeName && !root->kids.empty()) {
+            AST* typeNode = root->kids[0].get();
+            if (typeNode && typeNode->kind == NodeKind::RecordType) {
+                for (auto& child : typeNode->kids) {
+                    if (child->kind == NodeKind::VarDecl && child->text == fieldName && !child->kids.empty()) {
+                        return typeFromTypeNode(child->kids[0].get());
+                    }
+                }
+            }
+        }
+        
+        for (auto& child : root->kids) {
+            TypeInfo result = getRecordFieldType(recordTypeName, fieldName, child.get());
+            if (result.kind != "unknown") return result;
+        }
+        
+        return ti;
+    }
+    
+    TypeInfo getRecordFieldTypeFromVarDecl(AST* varDecl, const string& fieldName) {
+        TypeInfo ti;
+        if (!varDecl || varDecl->kind != NodeKind::VarDecl) return ti;
+        
+        if (varDecl->kids.size() > 0) {
+            AST* typeNode = varDecl->kids[0].get();
+            if (typeNode && typeNode->kind == NodeKind::RecordType) {
+                for (auto& child : typeNode->kids) {
+                    if (child->kind == NodeKind::VarDecl && child->text == fieldName && !child->kids.empty()) {
+                        return typeFromTypeNode(child->kids[0].get());
+                    }
+                }
+            }
+        }
+        
+        return ti;
+    }
+    
+    AST* findVarDecl(const string& varName, AST* root) {
+        if (!root) return nullptr;
+        
+        if (root->kind == NodeKind::VarDecl && root->text == varName) {
+            return root;
+        }
+        
+        for (auto& child : root->kids) {
+            AST* result = findVarDecl(varName, child.get());
+            if (result) return result;
+        }
+        
+        return nullptr;
+    }
+    
+    TypeInfo inferExprType(AST* e) {
+        TypeInfo ti;
+        if (!e) return ti;
+
+        switch (e->kind) {
+            case NodeKind::Primary: {
+                if (e->text == "true" || e->text == "false") { ti.kind = "boolean"; return ti; }
+                if (isInteger(e->text)) { ti.kind = "integer"; return ti; }
+                {
+                    bool hasDot = false, ok = true;
+                    size_t i = (e->text.size() && (e->text[0]=='+'||e->text[0]=='-')) ? 1 : 0;
+                    for (; i < e->text.size(); ++i) {
+                        if (e->text[i]=='.') { if (hasDot) { ok=false; break; } hasDot=true; }
+                        else if (!isdigit(e->text[i])) { ok=false; break; }
+                    }
+                    if (ok && hasDot) { ti.kind = "real"; return ti; }
+                }
+                return ti;
+            }
+
+            case NodeKind::Name: {
+                for (int i = (int)scopes.size()-1; i>=0; --i) {
+                    auto it = scopes[i].find(e->text);
+                    if (it != scopes[i].end()) {
+                        if (it->second.isRoutine) {
+                            ti.kind = it->second.returnType.empty() ? "unknown" : it->second.returnType;
+                            return ti;
+                        }
+                        ti.kind = it->second.type;
+                        auto td = typeDefs.find(ti.kind);
+                        if (td != typeDefs.end() && td->second.kind == "array") {
+                            ti = td->second;
+                        }
+                        return ti;
+                    }
+                }
+                return ti;
+            }
+
+            case NodeKind::Call: {
+                for (int i = (int)scopes.size()-1; i>=0; --i) {
+                    auto it = scopes[i].find(e->text);
+                    if (it != scopes[i].end() && it->second.isRoutine) {
+                        ti.kind = it->second.returnType.empty() ? "unknown" : it->second.returnType;
+                        return ti;
+                    }
+                }
+                return ti;
+            }
+
+            case NodeKind::ModPrimary: {
+                TypeInfo cur;
+                if (!e->kids.empty() && e->kids[0]->kind == NodeKind::Name) {
+                    cur = inferExprType(e->kids[0].get());
+                } else {
+                    cur.kind = "unknown";
+                }
+                for (size_t i = 1; i < e->kids.size(); ++i) {
+                    if (e->kids[i]->kind == NodeKind::Index) {
+                        if (cur.kind == "array") {
+                            AST* idxExpr = e->kids[i]->kids.empty() ? nullptr : e->kids[i]->kids[0].get();
+                            if (idxExpr && idxExpr->kind == NodeKind::Primary && isInteger(idxExpr->text) && cur.arrayLen > 0) {
+                                long long idx = stoll(idxExpr->text);
+                                if (idx < 1 || idx > cur.arrayLen) {
+                                    addError(e->kids[i]->line, e->kids[i]->col,
+                                        "index " + to_string(idx) + " is out of bounds 1.." + to_string(cur.arrayLen));
+                                }
+                            }
+                            TypeInfo elemType;
+                            elemType.kind = cur.elemKind.empty() ? "unknown" : cur.elemKind;
+                            auto td = typeDefs.find(elemType.kind);
+                            if (td != typeDefs.end() && td->second.kind == "array") {
+                                elemType = td->second;
+                            }
+                            cur = elemType;
+                        } else {
+                            cur.kind = "unknown";
+                        }
+                    } else if (e->kids[i]->kind == NodeKind::Member) {
+                        if (cur.kind != "unknown" && rootAST) {
+                            string recordTypeName = cur.kind;
+                            string fieldName = e->kids[i]->text;
+                            TypeInfo fieldType;
+                            
+                            if (recordTypeName == "record") {
+                                if (e->kids[0]->kind == NodeKind::Name) {
+                                    AST* varDecl = findVarDecl(e->kids[0]->text, rootAST);
+                                    if (varDecl) {
+                                        fieldType = getRecordFieldTypeFromVarDecl(varDecl, fieldName);
+                                    }
+                                }
+                            } else {
+                                fieldType = getRecordFieldType(recordTypeName, fieldName, rootAST);
+                                if (fieldType.kind == "unknown") {
+                                    auto td = typeDefs.find(recordTypeName);
+                                    if (td != typeDefs.end() && td->second.kind == "record") {
+                                        fieldType = getRecordFieldType(recordTypeName, fieldName, rootAST);
+                                    }
+                                }
+                            }
+                            
+                            if (fieldType.kind != "unknown") {
+                                cur = fieldType;
+                            } else {
+                                cur.kind = "unknown";
+                            }
+                        } else {
+                            cur.kind = "unknown";
+                        }
+                    }
+                }
+                return cur;
+            }
+
+            case NodeKind::Factor:
+            case NodeKind::Simple: {
+                if (e->kids.size()==2) {
+                    TypeInfo a = inferExprType(e->kids[0].get());
+                    TypeInfo b = inferExprType(e->kids[1].get());
+                    if (a.kind=="real" || b.kind=="real") { ti.kind="real"; }
+                    else if (a.kind=="integer" && b.kind=="integer") { ti.kind="integer"; }
+                    else { ti.kind="unknown"; }
+                    return ti;
+                }
+                return ti;
+            }
+
+            case NodeKind::Rel:
+            case NodeKind::Expr: {
+                ti.kind = "boolean";
+                return ti;
+            }
+
+            default:
+                return ti;
+        }
+    }
+
+    void checkDeclarationsAndUsage(AST* node) {
+        if (!node) return;
+        
+        if (node->kind == NodeKind::RoutineDecl) {
+            // Check: nested routines are not allowed (only global routines)
+            if (insideRoutineDepth > 0) {
+                AST* header = node->kids.size() > 0 && node->kids[0]->kind == NodeKind::RoutineHeader 
+                    ? node->kids[0].get() : nullptr;
+                if (header) {
+                    addError(header->line, header->col,
+                        "nested routines are not allowed; only global routines are supported");
+                }
+            }
+            
+            if (node->kids.size() > 0 && node->kids[0]->kind == NodeKind::RoutineHeader) {
+                AST* header = node->kids[0].get();
+                string routineName = header->text;
+                
+                Symbol sym;
+                sym.name = routineName;
+                sym.type = "routine";
+                sym.line = header->line;
+                sym.col = header->col;
+                sym.isRoutine = true;
+                
+                if (header->kids.size() > 0 && header->kids[0]->kind == NodeKind::Params) {
+                    for (auto& param : header->kids[0]->kids) {
+                        if (param->kind == NodeKind::Param && param->kids.size() > 0) {
+                            sym.paramTypes.push_back(getTypeString(param->kids[0].get()));
+                        }
+                    }
+                }
+                
+                if (header->kids.size() > 1 && header->kids[1]->kind != NodeKind::RoutineBodyBlock 
+                    && header->kids[1]->kind != NodeKind::RoutineBodyExpr) {
+                    sym.returnType = getTypeString(header->kids[1].get());
+                }
+                
+                // Check if this is a forward declaration (no body) or full definition
+                bool hasBody = false;
+                for (size_t i = 1; i < header->kids.size(); i++) {
+                    if (header->kids[i]->kind == NodeKind::RoutineBodyBlock || 
+                        header->kids[i]->kind == NodeKind::RoutineBodyExpr) {
+                        hasBody = true;
+                        break;
+                    }
+                }
+                
+                // Check for duplicate declarations
+                if (scopes.back().count(routineName)) {
+                    // Check if it's a forward declaration being completed
+                    if (forwardDeclarations.count(routineName) && hasBody) {
+                        // Verify signature matches
+                        Symbol& existing = scopes.back()[routineName];
+                        if (existing.paramTypes.size() != sym.paramTypes.size() ||
+                            existing.returnType != sym.returnType) {
+                            addError(header->line, header->col,
+                                "forward declaration signature mismatch for routine '" + routineName + "'");
+                        } else {
+                            // Check parameter types match
+                            for (size_t i = 0; i < sym.paramTypes.size(); i++) {
+                                if (existing.paramTypes[i] != sym.paramTypes[i]) {
+                                    addError(header->line, header->col,
+                                        "forward declaration parameter type mismatch for routine '" + routineName + "'");
+                                    break;
+                                }
+                            }
+                        }
+                        fullDefinitions[routineName] = true;
+                    } else {
+                        addError(header->line, header->col,
+                            "duplicate declaration of routine '" + routineName + "'");
+                    }
+                } else {
+                    scopes.back()[routineName] = sym;
+                    if (!hasBody) {
+                        forwardDeclarations[routineName] = true;
+                    } else {
+                        fullDefinitions[routineName] = true;
+                    }
+                }
+                
+                vector<TypeInfo> ptiList;
+                if (header->kids.size() > 0 && header->kids[0]->kind == NodeKind::Params) {
+                    for (auto& param : header->kids[0]->kids) {
+                        if (param->kind == NodeKind::Param && !param->kids.empty()) {
+                            ptiList.push_back(typeFromTypeNode(param->kids[0].get()));
+                        }
+                    }
+                }
+                funcParamTypesTI[routineName] = std::move(ptiList);
+                
+                if (!sym.returnType.empty()) {
+                    for (auto& ch : header->kids)
+                        if (ch && (ch->kind==NodeKind::PrimType||ch->kind==NodeKind::UserType
+                                || ch->kind==NodeKind::ArrayType||ch->kind==NodeKind::RecordType)) {
+                            funcReturnTI[routineName] = typeFromTypeNode(ch.get());
+                            break;
+                        }
+                }
+            }
+            
+            scopes.push_back({});
+            insideRoutineDepth++;
+            
+            if (node->kids.size() > 0 && node->kids[0]->kind == NodeKind::RoutineHeader) {
+                routineNameStack.push_back(node->kids[0]->text);
+            }
+            
+            if (node->kids.size() > 0 && node->kids[0]->kind == NodeKind::RoutineHeader) {
+                AST* header = node->kids[0].get();
+                if (header->kids.size() > 0 && header->kids[0]->kind == NodeKind::Params) {
+                    for (auto& param : header->kids[0]->kids) {
+                        if (param->kind == NodeKind::Param) {
+                            Symbol pSym;
+                            pSym.name = param->text;
+                            pSym.type = param->kids.size() > 0 ? getTypeString(param->kids[0].get()) : "unknown";
+                            pSym.line = param->line;
+                            pSym.col = param->col;
+                            pSym.used = true;  
+                            scopes.back()[param->text] = pSym;
+                        }
+                    }
+                }
+            }
+            
+            for (auto& kid : node->kids) {
+                checkDeclarationsAndUsage(kid.get());
+            }
+            
+            AST *header = nullptr;
+            if (!node->kids.empty() && node->kids[0]->kind == NodeKind::RoutineHeader)
+            {
+                header = node->kids[0].get();
+            }
+
+            auto isTypeNode = [](AST *n)
+            {
+                if (!n)
+                    return false;
+                switch (n->kind)
+                {
+                case NodeKind::PrimType:
+                case NodeKind::UserType:
+                case NodeKind::ArrayType:
+                case NodeKind::RecordType:
+                    return true;
+                default:
+                    return false;
+                }
+            };
+
+            auto findHeaderChild = [&](NodeKind k) -> AST *
+            {
+                if (!header)
+                    return nullptr;
+                for (auto &ch : header->kids)
+                    if (ch->kind == k)
+                        return ch.get();
+                return nullptr;
+            };
+
+            bool hasReturnType = false;
+            if (header)
+            {
+                for (auto &ch : header->kids)
+                    if (isTypeNode(ch.get()))
+                    {
+                        hasReturnType = true;
+                        break;
+                    }
+            }
+
+            AST *bodyExpr = findHeaderChild(NodeKind::RoutineBodyExpr);
+            AST *bodyBlock = findHeaderChild(NodeKind::RoutineBodyBlock);
+
+            if (hasReturnType)
+            {
+                bool ok = (bodyExpr != nullptr)                       
+                          || (bodyBlock && hasReturnStmt(bodyBlock)); 
+
+                if (!ok && header)
+                {
+                    addError(header->line, header->col,
+                             "function '" + header->text + "' must return a value");
+                }
+            }
+
+            scopes.pop_back();
+            insideRoutineDepth--;
+            if (!routineNameStack.empty()) routineNameStack.pop_back();
+            return;
+        }
+        
+        if (node->kind == NodeKind::VarDecl) {
+            Symbol sym;
+            sym.name = node->text;
+            sym.type = node->kids.size() > 0 ? getTypeString(node->kids[0].get()) : "unknown";
+            sym.line = node->line;
+            sym.col = node->col;
+            
+            scopes.back()[node->text] = sym;
+            
+            for (auto& kid : node->kids) {
+                checkDeclarationsAndUsage(kid.get());
+            }
+            
+            if (node->kids.size() >= 2) {
+                AST* typeNode = node->kids[0].get();
+                AST* initExpr = node->kids[1].get();
+                
+                bool isTypeNode = (typeNode->kind == NodeKind::PrimType || 
+                                  typeNode->kind == NodeKind::UserType ||
+                                  typeNode->kind == NodeKind::ArrayType ||
+                                  typeNode->kind == NodeKind::RecordType);
+                
+                if (isTypeNode && initExpr) {
+                    TypeInfo declaredType = typeFromTypeNode(typeNode);
+                    TypeInfo initType = inferExprType(initExpr);
+                    
+                    if (declaredType.kind != "unknown" && initType.kind != "unknown" && 
+                        !isCompatibleType(declaredType, initType)) {
+                        addError(initExpr->line, initExpr->col,
+                            "type mismatch in variable initialization: declared type is '" +
+                            (declaredType.kind=="array" ? ("array(" + declaredType.elemKind + (declaredType.arrayLen>0?(","+to_string(declaredType.arrayLen)):"") + ")") : declaredType.kind) +
+                            "', initializer type is '" +
+                            (initType.kind=="array" ? ("array(" + initType.elemKind + (initType.arrayLen>0?(","+to_string(initType.arrayLen)):"") + ")") : initType.kind) +
+                            "'");
+                    }
+                }
+            }
+            return;
+        }
+        
+        if (node->kind == NodeKind::For) {
+            scopes.push_back({});
+            
+            Symbol loopVar;
+            loopVar.name = node->text;
+            loopVar.type = "integer";
+            loopVar.line = node->line;
+            loopVar.col = node->col;
+            loopVar.used = true;  
+            scopes.back()[node->text] = loopVar;
+            
+            // Mark loop variable as read-only
+            forLoopVariables.insert(node->text);
+            
+            for (auto& kid : node->kids) {
+                checkDeclarationsAndUsage(kid.get());
+            }
+            
+            // Remove loop variable from read-only set after loop scope
+            forLoopVariables.erase(node->text);
+            scopes.pop_back();
+            return;
+        }
+        
+        if (node->kind == NodeKind::ReturnStmt) {
+            if (insideRoutineDepth == 0) {
+                addError(node->line, node->col, 
+                    "return statement can only be used inside a routine");
+            }
+            
+            if (!routineNameStack.empty()) {
+                string cur = routineNameStack.back();
+                auto rit = funcReturnTI.find(cur);
+                if (rit != funcReturnTI.end()) {
+                    const TypeInfo& retFormal = rit->second;
+                    if (!node->kids.empty()) {
+                        TypeInfo retActual = inferExprType(node->kids[0].get());
+                        if (retFormal.kind != "unknown" && retActual.kind != "unknown" &&
+                            !isCompatibleType(retFormal, retActual)) {
+                            addError(node->kids[0]->line, node->kids[0]->col,
+                                "return type mismatch: expected '" +
+                                (retFormal.kind=="array" ? ("array(" + retFormal.elemKind + (retFormal.arrayLen>0?(","+to_string(retFormal.arrayLen)):"") + ")") : retFormal.kind) +
+                                "', got '" +
+                                (retActual.kind=="array" ? ("array(" + retActual.elemKind + (retActual.arrayLen>0?(","+to_string(retActual.arrayLen)):"") + ")") : retActual.kind) +
+                                "'");
+                        }
+                    }
+                }
+            }
+        }
+        
+        if (node->kind == NodeKind::Name) {
+            if (node->text == "reverse")
+            {
+                return;
+            }
+            string varName = node->text;
+            
+            bool found = false;
+            for (int i = scopes.size() - 1; i >= 0; i--) {
+                if (scopes[i].count(varName)) {
+                    scopes[i][varName].used = true;
+                    globalUsage[varName] = true;  
+                    found = true;
+                    break;
+                }
+            }
+            
+            if (!found) {
+                addError(node->line, node->col, 
+                    "variable '" + varName + "' used before declaration");
+            }
+        }
+        
+        if (node->kind == NodeKind::Call) {
+            string funcName = node->text;
+            
+            bool found = false;
+            for (int i = scopes.size() - 1; i >= 0; i--) {
+                if (scopes[i].count(funcName)) {
+                    scopes[i][funcName].used = true;
+                    
+                    Symbol& funcSym = scopes[i][funcName];
+                    if (funcSym.isRoutine) {
+                        size_t expectedArgs = funcSym.paramTypes.size();
+                        size_t actualArgs = node->kids.size();
+                        
+                        if (actualArgs != expectedArgs) {
+                            addError(node->line, node->col,
+                                "function '" + funcName + "' expects " + 
+                                to_string(expectedArgs) + " arguments, but " +
+                                to_string(actualArgs) + " provided");
+                        }
+                        
+                        auto tiIt = funcParamTypesTI.find(funcName);
+                        if (tiIt != funcParamTypesTI.end()) {
+                            const auto& formals = tiIt->second;
+                            if (formals.size() == node->kids.size()) {
+                                for (size_t k = 0; k < formals.size(); ++k) {
+                                    TypeInfo actual = inferExprType(node->kids[k].get());
+                                    const TypeInfo& formal = formals[k];
+                                    if (!isCompatibleType(formal, actual)) {
+                                        addError(node->kids[k]->line, node->kids[k]->col,
+                                            "type mismatch for argument " + to_string(k+1) +
+                                            " in call to '" + funcName + "': expected '" +
+                                            (formal.kind=="array" ? ("array(" + formal.elemKind + (formal.arrayLen>0?(","+to_string(formal.arrayLen)):"") + ")") : formal.kind) +
+                                            "', got '" +
+                                            (actual.kind=="array" ? ("array(" + actual.elemKind + (actual.arrayLen>0?(","+to_string(actual.arrayLen)):"") + ")") : actual.kind) +
+                                            "'");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    found = true;
+                    break;
+                }
+            }
+            
+            if (!found) {
+                addError(node->line, node->col,
+                    "function '" + funcName + "' used before declaration");
+            }
+        }
+        
+        if (node->kind == NodeKind::ModPrimary) {
+            inferExprType(node);
+        }
+        
+        if (node->kind == NodeKind::Assign) {
+            if (node->kids.size() > 0) {
+                AST* lhs = node->kids[0].get();
+                if (lhs->kind == NodeKind::ModPrimary && lhs->kids.size() > 0) {
+                    if (lhs->kids[0]->kind == NodeKind::Name) {
+                        string varName = lhs->kids[0]->text;
+                        
+                        // Check if trying to assign to for loop variable (read-only)
+                        if (forLoopVariables.count(varName)) {
+                            addError(lhs->kids[0]->line, lhs->kids[0]->col,
+                                "loop variable '" + varName + "' is read-only");
+                            return;  // Don't continue checking this assignment
+                        }
+                        
+                        bool found = false;
+                        for (int i = scopes.size() - 1; i >= 0; i--) {
+                            if (scopes[i].count(varName)) {
+                                scopes[i][varName].used = true;
+                                found = true;
+                                break;
+                            }
+                        }
+                        
+                        if (!found) {
+                            addError(lhs->kids[0]->line, lhs->kids[0]->col,
+                                "variable '" + varName + "' used before declaration");
+                        }
+                    }
+                }
+            }
+            
+            if (node->kids.size() > 1) {
+                checkDeclarationsAndUsage(node->kids[1].get());
+            }
+            
+            if (node->kids.size() > 1) {
+                TypeInfo lt = inferExprType(node->kids[0].get());
+                TypeInfo rt = inferExprType(node->kids[1].get());
+                if (lt.kind != "unknown" && rt.kind != "unknown" && !isCompatibleType(lt, rt)) {
+                    addError(node->line, node->col,
+                        "type mismatch in assignment: left is '" +
+                        (lt.kind=="array" ? ("array(" + lt.elemKind + (lt.arrayLen>0?(","+to_string(lt.arrayLen)):"") + ")") : lt.kind) +
+                        "', right is '" +
+                        (rt.kind=="array" ? ("array(" + rt.elemKind + (rt.arrayLen>0?(","+to_string(rt.arrayLen)):"") + ")") : rt.kind) +
+                        "'");
+                }
+            }
+            return;
+        }
+        
+        // Check While loop: condition must be boolean
+        if (node->kind == NodeKind::While && node->kids.size() > 0) {
+            TypeInfo condType = inferExprType(node->kids[0].get());
+            if (condType.kind != "unknown" && condType.kind != "boolean") {
+                addError(node->kids[0]->line, node->kids[0]->col,
+                    "while loop condition must be boolean, got '" + condType.kind + "'");
+            }
+        }
+        
+        // Check If statement: condition must be boolean
+        if (node->kind == NodeKind::If && node->kids.size() > 0) {
+            TypeInfo condType = inferExprType(node->kids[0].get());
+            if (condType.kind != "unknown" && condType.kind != "boolean") {
+                addError(node->kids[0]->line, node->kids[0]->col,
+                    "if statement condition must be boolean, got '" + condType.kind + "'");
+            }
+        }
+        
+        // Check For loop: range expressions must be integer
+        if (node->kind == NodeKind::For && node->kids.size() > 0) {
+            AST* rangeNode = node->kids[0].get();
+            if (rangeNode->kind == NodeKind::Expr && rangeNode->text == "..") {
+                // Range with two expressions
+                if (rangeNode->kids.size() >= 2) {
+                    TypeInfo startType = inferExprType(rangeNode->kids[0].get());
+                    TypeInfo endType = inferExprType(rangeNode->kids[1].get());
+                    if (startType.kind != "unknown" && startType.kind != "integer") {
+                        addError(rangeNode->kids[0]->line, rangeNode->kids[0]->col,
+                            "for loop range start must be integer, got '" + startType.kind + "'");
+                    }
+                    if (endType.kind != "unknown" && endType.kind != "integer") {
+                        addError(rangeNode->kids[1]->line, rangeNode->kids[1]->col,
+                            "for loop range end must be integer, got '" + endType.kind + "'");
+                    }
+                }
+            }
+        }
+        
+        for (auto& kid : node->kids) {
+            checkDeclarationsAndUsage(kid.get());
+        }
+    }
+    
+    void checkSizelessArrays(AST *node, bool inParams = false)
+    {
+        if (!node)
+            return;
+
+        if (node->kind == NodeKind::ArrayType)
+        {
+            bool sizeless = (node->kids.size() == 1);
+            if (sizeless && !inParams)
+            {
+                addError(node->line, node->col,
+                         "sizeless array 'array[]' is allowed only in routine parameter types");
+            }
+        }
+
+        if (node->kind == NodeKind::Params)
+        {
+            for (auto &ch : node->kids)
+                checkSizelessArrays(ch.get(), true);
+            return;
+        }
+
+        for (auto &ch : node->kids)
+            checkSizelessArrays(ch.get(), inParams);
+    }
+
+    static bool hasReturnStmt(AST *n)
+    {
+        if (!n)
+            return false;
+        if (n->kind == NodeKind::ReturnStmt)
+            return true;
+        for (auto &c : n->kids)
+            if (hasReturnStmt(c.get()))
+                return true;
+        return false;
+    }
+    
+    void optimizeConstantFolding(AST* node) {
+        if (!node) return;
+        
+        for (auto& kid : node->kids) {
+            optimizeConstantFolding(kid.get());
+        }
+        
+        if (node->kind == NodeKind::Factor || node->kind == NodeKind::Simple || 
+            node->kind == NodeKind::Rel || node->kind == NodeKind::Expr) {
+            
+            if (node->kids.size() == 2) {
+                AST* left = node->kids[0].get();
+                AST* right = node->kids[1].get();
+                
+                if (left->kind == NodeKind::Primary && right->kind == NodeKind::Primary) {
+                    bool leftIsInt = isInteger(left->text);
+                    bool rightIsInt = isInteger(right->text);
+                    bool leftIsBool = (left->text == "true" || left->text == "false");
+                    bool rightIsBool = (right->text == "true" || right->text == "false");
+                    
+                    if (leftIsInt && rightIsInt) {
+                        long long lval = stoll(left->text);
+                        long long rval = stoll(right->text);
+                        long long result = 0;
+                        bool computed = false;
+                        
+                        if (node->text == "+") { result = lval + rval; computed = true; }
+                        else if (node->text == "-") { result = lval - rval; computed = true; }
+                        else if (node->text == "*") { result = lval * rval; computed = true; }
+                        else if (node->text == "/" && rval != 0) { result = lval / rval; computed = true; }
+                        else if (node->text == "%" && rval != 0) { result = lval % rval; computed = true; }
+                        
+                        if (computed) {
+                            node->kind = NodeKind::Primary;
+                            node->text = to_string(result);
+                            node->kids.clear();
+                            constantFoldingCount++;
+                            return;
+                        }
+                        
+                        bool boolResult = false;
+                        bool isBoolOp = false;
+                        
+                        if (node->text == "<") { boolResult = lval < rval; isBoolOp = true; }
+                        else if (node->text == "<=") { boolResult = lval <= rval; isBoolOp = true; }
+                        else if (node->text == ">") { boolResult = lval > rval; isBoolOp = true; }
+                        else if (node->text == ">=") { boolResult = lval >= rval; isBoolOp = true; }
+                        else if (node->text == "=") { boolResult = lval == rval; isBoolOp = true; }
+                        else if (node->text == "/=") { boolResult = lval != rval; isBoolOp = true; }
+                        
+                        if (isBoolOp) {
+                            node->kind = NodeKind::Primary;
+                            node->text = boolResult ? "true" : "false";
+                            node->kids.clear();
+                            constantFoldingCount++;
+                            return;
+                        }
+                    }
+                    
+                    if (leftIsBool && rightIsBool) {
+                        bool lval = (left->text == "true");
+                        bool rval = (right->text == "true");
+                        bool result = false;
+                        bool computed = false;
+                        
+                        if (node->text == "and") { result = lval && rval; computed = true; }
+                        else if (node->text == "or") { result = lval || rval; computed = true; }
+                        else if (node->text == "xor") { result = lval != rval; computed = true; }
+                        
+                        if (computed) {
+                            node->kind = NodeKind::Primary;
+                            node->text = result ? "true" : "false";
+                            node->kids.clear();
+                            constantFoldingCount++;
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+        
+        if (node->kind == NodeKind::Primary && node->text == "not" && node->kids.size() == 1) {
+            AST* child = node->kids[0].get();
+            if (child->kind == NodeKind::Primary) {
+                if (child->text == "true") {
+                    node->text = "false";
+                    node->kids.clear();
+                    constantFoldingCount++;
+                } else if (child->text == "false") {
+                    node->text = "true";
+                    node->kids.clear();
+                    constantFoldingCount++;
+                }
+            }
+        }
+    }
+    
+    void optimizeUnreachableCode(AST* node) {
+        if (!node) return;
+        
+        if (node->kind == NodeKind::Body || node->kind == NodeKind::Program) {
+            bool foundReturn = false;
+            vector<size_t> toDelete;
+            
+            for (size_t i = 0; i < node->kids.size(); i++) {
+                if (foundReturn) {
+                    toDelete.push_back(i);
+                    unreachableCodeCount++;
+                } else if (node->kids[i]->kind == NodeKind::ReturnStmt) {
+                    foundReturn = true;
+                }
+            }
+            
+            for (int i = toDelete.size() - 1; i >= 0; i--) {
+                node->kids.erase(node->kids.begin() + toDelete[i]);
+            }
+        }
+        
+        for (auto& kid : node->kids) {
+            optimizeUnreachableCode(kid.get());
+        }
+    }
+    
+    void optimizeIfSimplification(AST* node) {
+        if (!node) return;
+        
+        for (auto& kid : node->kids) {
+            optimizeIfSimplification(kid.get());
+        }
+        
+        if (node->kind == NodeKind::If && node->kids.size() >= 2) {
+            AST* condition = node->kids[0].get();
+            
+            if (condition->kind == NodeKind::Primary) {
+                if (condition->text == "true") {
+                    AST* thenBody = node->kids[1].get();
+                    
+                    vector<unique_ptr<AST>> newKids;
+                    for (auto& stmt : thenBody->kids) {
+                        newKids.push_back(std::move(stmt));
+                    }
+                    
+                    node->kids = std::move(newKids);
+                    node->kind = NodeKind::Body;
+                    node->text = "";
+                    
+                    ifSimplificationCount++;
+                } else if (condition->text == "false") {
+                    if (node->kids.size() >= 3) {
+                        AST* elseBody = node->kids[2].get();
+                        
+                        vector<unique_ptr<AST>> newKids;
+                        for (auto& stmt : elseBody->kids) {
+                            newKids.push_back(std::move(stmt));
+                        }
+                        
+                        node->kids = std::move(newKids);
+                        node->kind = NodeKind::Body;
+                        node->text = "";
+                    } else {
+                        node->kids.clear();
+                        node->kind = NodeKind::Body;
+                        node->text = "";
+                    }
+                    
+                    ifSimplificationCount++;
+                }
+            }
+        }
+    }
+    
+    void optimizeUnusedVariables(AST* node) {
+        if (!node) return;
+        
+        removeUnusedVars(node, 0);
+    }
+    
+    void removeUnusedVars(AST* node, int scopeLevel) {
+        if (!node) return;
+        
+        int nextLevel = scopeLevel;
+        if (node->kind == NodeKind::RoutineDecl || node->kind == NodeKind::For) {
+            nextLevel = scopeLevel + 1;
+        }
+        
+        if (node->kind == NodeKind::Body || node->kind == NodeKind::Program) {
+            vector<size_t> toDelete;
+            
+            for (size_t i = 0; i < node->kids.size(); i++) {
+                if (node->kids[i]->kind == NodeKind::VarDecl) {
+                    string varName = node->kids[i]->text;
+                    
+                    bool used = globalUsage.count(varName) && globalUsage[varName];
+                    if (!used) {
+                        toDelete.push_back(i);
+                        unusedVarCount++;
+                        addWarning(node->kids[i]->line, node->kids[i]->col,
+                            "unused variable '" + varName + "' removed");
+                    }
+                }
+            }
+            
+            for (int i = toDelete.size() - 1; i >= 0; i--) {
+                node->kids.erase(node->kids.begin() + toDelete[i]);
+            }
+        }
+        
+        for (auto& kid : node->kids) {
+            removeUnusedVars(kid.get(), nextLevel);
+        }
+    }
+    
+    string getTypeString(AST* typeNode) {
+        if (!typeNode) return "unknown";
+        if (typeNode->kind == NodeKind::PrimType) return typeNode->text;
+        if (typeNode->kind == NodeKind::UserType) return typeNode->text;
+        if (typeNode->kind == NodeKind::ArrayType) return "array";
+        if (typeNode->kind == NodeKind::RecordType) return "record";
+        return "unknown";
+    }
+    
+    bool isInteger(const string& s) {
+        if (s.empty()) return false;
+        size_t start = 0;
+        if (s[0] == '-' || s[0] == '+') start = 1;
+        if (start >= s.size()) return false;
+        for (size_t i = start; i < s.size(); i++) {
+            if (!isdigit(s[i])) return false;
+        }
+        return true;
+    }
+    
+    void addError(int line, int col, const string& msg) {
+        ostringstream os;
+        os << "Error at " << line << ":" << col << ": " << msg;
+        errors.push_back(os.str());
+    }
+    
+    void addWarning(int line, int col, const string& msg) {
+        ostringstream os;
+        os << "Warning at " << line << ":" << col << ": " << msg;
+        warnings.push_back(os.str());
+    }
+    
+    void printOptimizationStats() {
+        cout << "\nConstant folding: " << constantFoldingCount << " changed" << endl;
+        cout << "Unreachable code: " << unreachableCodeCount << " changed" << endl;
+        cout << "If simplification: " << ifSimplificationCount << " changed" << endl;
+        cout << "Unused variables: " << unusedVarCount << " changed" << endl;
+
+        int total = constantFoldingCount + unreachableCodeCount + ifSimplificationCount + unusedVarCount;
+        cout << "Total optimizations: " << total << endl;
+    }
+};
+
 int main(int argc, char** argv) {
     ios::sync_with_stdio(false);
     cin.tie(nullptr);
@@ -1410,6 +2985,16 @@ int main(int argc, char** argv) {
             cerr << "\nSyntax errors:\n";
             for (auto& e: p.errors) cerr << "  " << e << "\n";
             return 2;
+        }
+        
+        cout << "Syntax checks passed" << endl;
+        
+        // Semantic analysis
+        SemanticAnalyzer analyzer;
+        bool isValid = analyzer.analyze(tree.get());
+        if (!isValid) {
+            cerr << "\nSemantic analysis failed. Compilation aborted.\n";
+            return 3;
         }
         
         // Generate WASM
