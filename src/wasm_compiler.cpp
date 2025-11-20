@@ -203,18 +203,17 @@ unique_ptr<AST> nodeAt(NodeKind k, const Token &tok, string text = "")
     return std::make_unique<AST>(k, std::move(text), tok.line, tok.col);
 }
 
-// Forward declaration - we'll include parser code or copy necessary parts
-// For now, we'll assume we can parse the AST
 
 class WASMCompiler {
 private:
     ostringstream wat;
     int labelCounter = 0;
     int localCounter = 0;
+    int memoryOffset = 2048;
     
     struct VarInfo {
         string name;
-        string type;  // "i32", "f64", "i32" for boolean
+        string type;
         int localIndex = -1;
         bool isGlobal = false;
         bool isArray = false;
@@ -224,21 +223,90 @@ private:
     
     unordered_map<string, VarInfo> globalVars;
     vector<unordered_map<string, VarInfo>> localScopes;
-    unordered_map<string, int> routineParams;  // routine name -> param count
+    unordered_map<string, int> routineParams;
     
-    // Type table for resolving user-defined types
     struct TypeDef {
-        NodeKind kind;  // PrimType, ArrayType, RecordType, UserType
-        string baseType;  // For UserType, the resolved base type name
-        AST* typeNode;  // Pointer to the type definition AST node
+        NodeKind kind;
+        string baseType;
+        AST* typeNode;
     };
     unordered_map<string, TypeDef> typeTable;
+    AST* rootAST = nullptr;
     
     string getWASMType(const string& piType) {
         if (piType == "integer") return "i32";
         if (piType == "real") return "f64";
         if (piType == "boolean") return "i32";
-        return "i32";  // default
+        return "i32";
+    }
+    
+    string getPITypeFromVarInfo(VarInfo* var, AST* varDeclNode = nullptr) {
+        if (!var) return "integer";
+        
+        if (varDeclNode && varDeclNode->kind == NodeKind::VarDecl && varDeclNode->kids.size() > 0) {
+            AST* typeNode = varDeclNode->kids[0].get();
+            if (typeNode->kind == NodeKind::PrimType) {
+                return typeNode->text;
+            } else if (typeNode->kind == NodeKind::UserType) {
+                if (typeTable.count(typeNode->text)) {
+                    TypeDef& td = typeTable[typeNode->text];
+                    if (td.kind == NodeKind::PrimType && td.typeNode) {
+                        return td.typeNode->text;
+                    }
+                }
+            }
+        }
+        
+        if (var->type == "f64") return "real";
+        if (var->type == "i32") return "integer";
+        return "integer";
+    }
+    
+    AST* findVarDeclInAST(const string& varName, AST* root) {
+        if (!root) return nullptr;
+        if (root->kind == NodeKind::VarDecl && root->text == varName) {
+            return root;
+        }
+        for (auto& child : root->kids) {
+            AST* result = findVarDeclInAST(varName, child.get());
+            if (result) return result;
+        }
+        return nullptr;
+    }
+    
+    int getRecordFieldOffset(const string& recordTypeName, const string& fieldName, AST* root) {
+        if (!root) return -1;
+        
+        if (root->kind == NodeKind::TypeDecl && root->text == recordTypeName && root->kids.size() > 0) {
+            AST* typeNode = root->kids[0].get();
+            if (typeNode && typeNode->kind == NodeKind::RecordType) {
+                int offset = 0;
+                for (auto& child : typeNode->kids) {
+                    if (child->kind == NodeKind::VarDecl) {
+                        if (child->text == fieldName) {
+                            return offset;
+                        }
+                        if (child->kids.size() > 0) {
+                            AST* fieldTypeNode = child->kids[0].get();
+                            if (fieldTypeNode->kind == NodeKind::PrimType) {
+                                string piType = fieldTypeNode->text;
+                                if (piType == "integer" || piType == "boolean") {
+                                    offset += 4;
+                                } else if (piType == "real") {
+                                    offset += 8;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        for (auto& child : root->kids) {
+            int result = getRecordFieldOffset(recordTypeName, fieldName, child.get());
+            if (result >= 0) return result;
+        }
+        return -1;
     }
     
     string newLabel() { return "L" + to_string(labelCounter++); }
@@ -260,7 +328,6 @@ private:
         return "i32";
     }
     
-    // Build type table from AST
     void buildTypeTable(AST* root) {
         if (!root) return;
         if (root->kind == NodeKind::TypeDecl && !root->kids.empty()) {
@@ -274,30 +341,29 @@ private:
         }
     }
     
-    // Resolve user-defined type recursively
     string resolveUserType(const string& typeName) {
         if (typeTable.count(typeName)) {
             TypeDef& td = typeTable[typeName];
             if (td.kind == NodeKind::PrimType) {
                 return getWASMType(td.typeNode->text);
             } else if (td.kind == NodeKind::UserType) {
-                // Recursively resolve
                 return resolveUserType(td.typeNode->text);
             } else if (td.kind == NodeKind::ArrayType) {
-                return "i32";  // Array base address
+                return "i32";
             } else if (td.kind == NodeKind::RecordType) {
-                return "i32";  // Record pointer
+                return "i32";
             }
         }
-        return "i32";  // Default fallback
+        return "i32";
     }
     
 public:
     string compile(AST* root) {
         wat.str("");
         wat.clear();
+        rootAST = root;
+        memoryOffset = 2048;
         
-        // WASM module header with WASI imports
         emit("(module");
         emit("  (import \"wasi_snapshot_preview1\" \"fd_write\"");
         emit("    (func $fd_write (param i32 i32 i32 i32) (result i32)))");
@@ -305,10 +371,7 @@ public:
         emit("  (export \"memory\" (memory 0))");
         emit("");
         
-        // Build type table first
         buildTypeTable(root);
-        
-        // Helper function to convert i32 to string and print
         emit("  (func $print_i32 (param $value i32)");
         emit("    (local $buf i32)");
         emit("    (local $len i32)");
@@ -316,23 +379,19 @@ public:
         emit("    (local $div i32)");
         emit("    (local $rem i32)");
         emit("    (local $pos i32)");
-        emit("    ;; Allocate buffer at memory offset 1024");
         emit("    (local.set $buf (i32.const 1024))");
         emit("    (local.set $pos (i32.const 1024))");
         emit("    (local.set $neg (i32.const 0))");
-        emit("    ;; Handle negative numbers");
         emit("    (if (i32.lt_s (local.get $value) (i32.const 0))");
         emit("      (then");
         emit("        (local.set $neg (i32.const 1))");
         emit("        (local.set $value (i32.sub (i32.const 0) (local.get $value))))");
         emit("    ))");
-        emit("    ;; Handle zero case");
         emit("    (if (i32.eq (local.get $value) (i32.const 0))");
         emit("      (then");
         emit("        (i32.store8 (local.get $pos) (i32.const 48))");
         emit("        (local.set $pos (i32.add (local.get $pos) (i32.const 1))))");
         emit("    ))");
-        emit("    ;; Convert digits (reverse order)");
         emit("    (block $loop_end");
         emit("      (loop $loop");
         emit("        (if (i32.eq (local.get $value) (i32.const 0))");
@@ -346,10 +405,8 @@ public:
         emit("        (br $loop)");
         emit("      )");
         emit("    ))");
-        emit("    ;; Add minus sign if negative (at start, after reverse)");
         emit("    (if (i32.eq (local.get $neg) (i32.const 1))");
         emit("      (then");
-        emit("        ;; Shift string right by 1 byte to make room for minus");
         emit("        (local.set $pos (i32.const 1024))");
         emit("        (block $find_end)");
         emit("          (loop $find)");
@@ -375,7 +432,6 @@ public:
         emit("        (i32.store8 (i32.const 1024) (i32.const 45))");
         emit("      )");
         emit("    ))");
-        emit("    ;; Add newline");
         emit("    (local.set $pos (i32.const 1024))");
         emit("    (block $len_loop)");
         emit("      (loop $len)");
@@ -388,7 +444,6 @@ public:
         emit("    ))");
         emit("    (i32.store8 (local.get $pos) (i32.const 10))");
         emit("    (local.set $len (i32.add (i32.const 1) (i32.sub (local.get $pos) (i32.const 1024))))");
-        emit("    ;; Reverse the string (digits were stored in reverse)");
         emit("    (local.set $pos (i32.sub (local.get $pos) (i32.const 1)))");
         emit("    (block $rev_end");
         emit("      (loop $rev_loop");
@@ -404,13 +459,12 @@ public:
         emit("        (br $rev_loop)");
         emit("      )");
         emit("    ))");
-        emit("    ;; Write to stdout using fd_write");
-        emit("    (i32.store (i32.const 0) (i32.const 1024))  ;; iovs[0].buf");
-        emit("    (i32.store (i32.const 4) (local.get $len))  ;; iovs[0].len");
-        emit("    (i32.const 1)  ;; stdout");
-        emit("    (i32.const 0)  ;; iovs pointer");
-        emit("    (i32.const 1)  ;; iovs_len");
-        emit("    (i32.const 8)  ;; nwritten pointer");
+        emit("    (i32.store (i32.const 0) (i32.const 1024))");
+        emit("    (i32.store (i32.const 4) (local.get $len))");
+        emit("    (i32.const 1)");
+        emit("    (i32.const 0)");
+        emit("    (i32.const 1)");
+        emit("    (i32.const 8)");
         emit("    (call $fd_write)");
         emit("    drop");
         emit("  )");
@@ -433,7 +487,6 @@ public:
             }
         }
         
-        // Find and compile Main routine
         bool hasMain = false;
         for (auto& child : root->kids) {
             if (child->kind == NodeKind::RoutineDecl && 
@@ -465,7 +518,6 @@ public:
             }
             case NodeKind::Name: {
                 string varName = expr->text;
-                // Look up variable
                 VarInfo* var = nullptr;
                 for (int i = localScopes.size() - 1; i >= 0; i--) {
                     if (localScopes[i].count(varName)) {
@@ -502,7 +554,6 @@ public:
                 break;
             }
             case NodeKind::Factor: {
-                // Addition/subtraction
                 if (expr->text == "+" || expr->text == "-") {
                     string type1 = compileExpression(expr->kids[0].get(), indent);
                     string type2 = compileExpression(expr->kids[1].get(), indent);
@@ -552,7 +603,6 @@ public:
                 } else if (expr->text == "/=") {
                     emitIndent(indent, opType + ".ne");
                 }
-                // Comparisons already return i32, no need to wrap
                 return "i32";
             }
             case NodeKind::Call: {
@@ -562,13 +612,13 @@ public:
                     compileExpression(arg.get(), indent);
                 }
                 emitIndent(indent, "call $" + funcName);
-                return "i32";  // Assume i32 return for now
+                return "i32";
             }
             case NodeKind::ModPrimary: {
-                // Variable access with indexing or member access
                 if (expr->kids.size() > 0 && expr->kids[0]->kind == NodeKind::Name) {
                     string varName = expr->kids[0]->text;
                     VarInfo* var = nullptr;
+                    AST* varDeclNode = nullptr;
                     for (int i = localScopes.size() - 1; i >= 0; i--) {
                         if (localScopes[i].count(varName)) {
                             var = &localScopes[i][varName];
@@ -579,6 +629,11 @@ public:
                         var = &globalVars[varName];
                     }
                     
+                    // Find VarDecl node
+                    if (var && rootAST) {
+                        varDeclNode = findVarDeclInAST(varName, rootAST);
+                    }
+                    
                     if (var) {
                         if (var->isGlobal) {
                             emitIndent(indent, "global.get $" + varName);
@@ -586,14 +641,70 @@ public:
                             emitIndent(indent, "local.get $" + varName);
                         }
                         
-                        // Handle indexing (convert from 1-based to 0-based)
                         for (size_t i = 1; i < expr->kids.size(); i++) {
                             if (expr->kids[i]->kind == NodeKind::Index) {
                                 compileExpression(expr->kids[i]->kids[0].get(), indent);
                                 emitIndent(indent, "i32.const 1");
-                                emitIndent(indent, "i32.sub");  // Convert 1-based to 0-based
+                                emitIndent(indent, "i32.sub");
+                                emitIndent(indent, "i32.const 4");
+                                emitIndent(indent, "i32.mul");
                                 emitIndent(indent, "i32.add");
                                 emitIndent(indent, "i32.load");
+                            } else if (expr->kids[i]->kind == NodeKind::Member) {
+                                string fieldName = expr->kids[i]->text;
+                                string recordTypeName = "unknown";
+                                if (varDeclNode && varDeclNode->kids.size() > 0) {
+                                    AST* typeNode = varDeclNode->kids[0].get();
+                                    if (typeNode->kind == NodeKind::UserType) {
+                                        recordTypeName = typeNode->text;
+                                    } else if (typeNode->kind == NodeKind::RecordType) {
+                                        recordTypeName = "record";
+                                    }
+                                }
+                                
+                                // Get field offset
+                                int fieldOffset = -1;
+                                if (rootAST) {
+                                    if (recordTypeName != "unknown" && recordTypeName != "record") {
+                                        fieldOffset = getRecordFieldOffset(recordTypeName, fieldName, rootAST);
+                                    } else if (varDeclNode) {
+                                        // Try to get from inline record type
+                                        if (varDeclNode->kids.size() > 0) {
+                                            AST* typeNode = varDeclNode->kids[0].get();
+                                            if (typeNode->kind == NodeKind::RecordType) {
+                                                int offset = 0;
+                                                for (auto& child : typeNode->kids) {
+                                                    if (child->kind == NodeKind::VarDecl) {
+                                                        if (child->text == fieldName) {
+                                                            fieldOffset = offset;
+                                                            break;
+                                                        }
+                                                        if (child->kids.size() > 0) {
+                                                            AST* fieldTypeNode = child->kids[0].get();
+                                                            if (fieldTypeNode->kind == NodeKind::PrimType) {
+                                                                string piType = fieldTypeNode->text;
+                                                                if (piType == "integer" || piType == "boolean") {
+                                                                    offset += 4;
+                                                                } else if (piType == "real") {
+                                                                    offset += 8;
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                if (fieldOffset >= 0) {
+                                    emitIndent(indent, "i32.const " + to_string(fieldOffset));
+                                    emitIndent(indent, "i32.add");
+                                    emitIndent(indent, "i32.load");
+                                } else {
+                                    // Fallback
+                                    emitIndent(indent, "i32.load");
+                                }
                             }
                         }
                     }
@@ -617,7 +728,6 @@ public:
             emitIndent(indent, "i32.const 0");
             return "i32";
         } else if (!primary->text.empty()) {
-            // Check if it's a number
             if (isdigit(primary->text[0]) || primary->text[0] == '-' || primary->text[0] == '+') {
                 if (primary->text.find('.') != string::npos) {
                     // Real number
@@ -633,7 +743,6 @@ public:
             }
         }
         
-        // If it's a name, compile it
         if (primary->kind == NodeKind::Name) {
             return compileExpression(primary, indent);
         }
@@ -650,14 +759,14 @@ public:
                 AST* rhs = stmt->kids[1].get();
                 
                 // Compile RHS
-                compileExpression(rhs, indent);
+                string rhsType = compileExpression(rhs, indent);
                 
-                // Compile LHS and store
                 if (lhs->kind == NodeKind::ModPrimary && lhs->kids.size() > 0) {
                     AST* nameNode = lhs->kids[0].get();
                     if (nameNode->kind == NodeKind::Name) {
                         string varName = nameNode->text;
                         VarInfo* var = nullptr;
+                        AST* varDeclNode = nullptr;
                         for (int i = localScopes.size() - 1; i >= 0; i--) {
                             if (localScopes[i].count(varName)) {
                                 var = &localScopes[i][varName];
@@ -668,7 +777,34 @@ public:
                             var = &globalVars[varName];
                         }
                         
+                        if (var && rootAST) {
+                            varDeclNode = findVarDeclInAST(varName, rootAST);
+                        }
+                        
                         if (var) {
+                            string lhsPIType = getPITypeFromVarInfo(var, varDeclNode);
+                            string rhsPIType = (rhsType == "f64") ? "real" : 
+                                              (rhsType == "i32") ? "integer" : "integer";
+                            
+                            if (lhsPIType == "integer" && rhsPIType == "real") {
+                                emitIndent(indent, "f64.nearest");
+                                emitIndent(indent, "i32.trunc_f64_s");
+                            } else if (lhsPIType == "boolean" && rhsPIType == "integer") {
+                                emitIndent(indent, "local.tee $__temp_check");
+                                emitIndent(indent, "i32.const 1");
+                                emitIndent(indent, "i32.gt_u");
+                                emitIndent(indent, "if");
+                                emitIndent(indent + 1, "then");
+                                emitIndent(indent + 1, "unreachable");
+                                emitIndent(indent + 1, ")");
+                                emitIndent(indent, "local.get $__temp_check");
+                            } else if (lhsPIType == "real" && rhsPIType == "integer") {
+                                emitIndent(indent, "f64.convert_i32_s");
+                            } else if (lhsPIType == "real" && rhsPIType == "boolean") {
+                                emitIndent(indent, "f64.convert_i32_s");
+                            } else if (lhsPIType == "integer" && rhsPIType == "boolean") {
+                            }
+                            
                             if (lhs->kids.size() > 1 && lhs->kids[1]->kind == NodeKind::Index) {
                                 // Array assignment (convert from 1-based to 0-based)
                                 compileExpression(nameNode, indent);  // base address
@@ -677,6 +813,64 @@ public:
                                 emitIndent(indent, "i32.sub");  // Convert 1-based to 0-based
                                 emitIndent(indent, "i32.add");
                                 emitIndent(indent, "i32.store");
+                            } else if (lhs->kids.size() > 1 && lhs->kids[1]->kind == NodeKind::Member) {
+                                // Record field assignment
+                                string fieldName = lhs->kids[1]->text;
+                                // Get record type name
+                                string recordTypeName = "unknown";
+                                if (varDeclNode && varDeclNode->kids.size() > 0) {
+                                    AST* typeNode = varDeclNode->kids[0].get();
+                                    if (typeNode->kind == NodeKind::UserType) {
+                                        recordTypeName = typeNode->text;
+                                    } else if (typeNode->kind == NodeKind::RecordType) {
+                                        recordTypeName = "record";
+                                    }
+                                }
+                                
+                                // Get field offset
+                                int fieldOffset = -1;
+                                if (rootAST) {
+                                    if (recordTypeName != "unknown" && recordTypeName != "record") {
+                                        fieldOffset = getRecordFieldOffset(recordTypeName, fieldName, rootAST);
+                                    } else if (varDeclNode) {
+                                        // Try to get from inline record type
+                                        if (varDeclNode->kids.size() > 0) {
+                                            AST* typeNode = varDeclNode->kids[0].get();
+                                            if (typeNode->kind == NodeKind::RecordType) {
+                                                int offset = 0;
+                                                for (auto& child : typeNode->kids) {
+                                                    if (child->kind == NodeKind::VarDecl) {
+                                                        if (child->text == fieldName) {
+                                                            fieldOffset = offset;
+                                                            break;
+                                                        }
+                                                        if (child->kids.size() > 0) {
+                                                            AST* fieldTypeNode = child->kids[0].get();
+                                                            if (fieldTypeNode->kind == NodeKind::PrimType) {
+                                                                string piType = fieldTypeNode->text;
+                                                                if (piType == "integer" || piType == "boolean") {
+                                                                    offset += 4;
+                                                                } else if (piType == "real") {
+                                                                    offset += 8;
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                if (fieldOffset >= 0) {
+                                    compileExpression(nameNode, indent);
+                                    emitIndent(indent, "i32.const " + to_string(fieldOffset));
+                                emitIndent(indent, "i32.add");
+                                emitIndent(indent, "i32.store");
+                                } else {
+                                    compileExpression(nameNode, indent);
+                                    emitIndent(indent, "i32.store");
+                                }
                             } else {
                                 if (var->isGlobal) {
                                     emitIndent(indent, "global.set $" + varName);
@@ -692,12 +886,11 @@ public:
             case NodeKind::Print: {
                 for (auto& expr : stmt->kids) {
                     string exprType = compileExpression(expr.get(), indent);
-                    // Print based on type
                     if (exprType == "f64") {
                         emitIndent(indent, "call $print_f64");
                     } else {
                         // i32 or boolean (both are i32 in WASM)
-                        emitIndent(indent, "call $print_i32");
+                    emitIndent(indent, "call $print_i32");
                     }
                 }
                 break;
@@ -781,7 +974,7 @@ public:
                         emitIndent(indent, "local.set " + startLocal);
                         
                         // Evaluate and store end value
-                        compileExpression(rangeNode->kids[1].get(), indent);
+                            compileExpression(rangeNode->kids[1].get(), indent);
                         emitIndent(indent, "local.set " + endLocal);
                         
                         // Initialize loop variable
@@ -845,7 +1038,7 @@ public:
                     compileExpression(rangeNode, indent);
                     emitIndent(indent, "local.set " + arrBase);
                     
-                    // Get array size (assume stored at arr_base - 4)
+                    // Get array size (stored at arr_base - 4)
                     emitIndent(indent, "local.get " + arrBase);
                     emitIndent(indent, "i32.const 4");
                     emitIndent(indent, "i32.sub");
@@ -866,10 +1059,14 @@ public:
                     emitIndent(indent + 2, "i32.ge_u");
                     emitIndent(indent + 2, "br_if $end");
                     
-                    // Set loop variable to current index (1-based)
+                    // Get array element value (for v in array)
+                    // Calculate element address: arr_base + idx * elem_size
+                    emitIndent(indent + 2, "local.get " + arrBase);
                     emitIndent(indent + 2, "local.get " + idx);
-                    emitIndent(indent + 2, "i32.const 1");
+                    emitIndent(indent + 2, "i32.const 4");  // Assume i32 elements (4 bytes)
+                    emitIndent(indent + 2, "i32.mul");
                     emitIndent(indent + 2, "i32.add");
+                    emitIndent(indent + 2, "i32.load");
                     emitIndent(indent + 2, "local.set $" + loopVarName);
                     
                     // Body
@@ -939,6 +1136,18 @@ public:
                 var.type = getWASMType(typeNode->text);
             } else if (typeNode->kind == NodeKind::ArrayType) {
                 var.isArray = true;
+                // Get array size
+                if (typeNode->kids.size() >= 1) {
+                    AST* sizeNode = typeNode->kids[0].get();
+                    if (sizeNode && sizeNode->kind == NodeKind::Primary) {
+                        // Try to parse size as integer
+                        try {
+                            var.arraySize = stoi(sizeNode->text);
+                        } catch (...) {
+                            var.arraySize = -1;
+                        }
+                    }
+                }
                 if (typeNode->kids.size() > 1) {
                     AST* elemType = typeNode->kids[1].get();
                     if (elemType->kind == NodeKind::PrimType) {
@@ -1040,6 +1249,9 @@ public:
         
         emitIndent(indent, "(func $" + funcName);
         
+        // Reset memory offset for this function (each function gets its own memory region)
+        memoryOffset = 2048;
+        
         // Parameters
         localScopes.push_back({});
         localCounter = 0;
@@ -1138,6 +1350,17 @@ public:
             emitIndent(indent + 1, "(local $" + idx + " i32)");
         }
         
+        // Declare temp variable for boolean assignment check (if needed)
+        // We'll declare it only if we detect boolean assignments in the body
+        // For simplicity, always declare it
+        VarInfo tempVar;
+        tempVar.name = "__temp_check";
+        tempVar.type = "i32";
+        tempVar.isGlobal = false;
+        tempVar.localIndex = localCounter++;
+        localScopes.back()["__temp_check"] = tempVar;
+        emitIndent(indent + 1, "(local $__temp_check i32)");
+        
         // Body - check in header (RoutineBodyBlock is added to RoutineHeader)
         if (header->kids.size() > bodyIndex) {
             AST* body = header->kids[bodyIndex].get();
@@ -1146,7 +1369,80 @@ public:
                     for (auto& stmt : body->kids[0]->kids) {
                         if (stmt->kind == NodeKind::VarDecl) {
                             // Initialize local variable
-                            if (stmt->kids.size() > 1) {
+                            string varName = stmt->text;
+                            VarInfo* var = nullptr;
+                            if (localScopes.back().count(varName)) {
+                                var = &localScopes.back()[varName];
+                            }
+                            
+                            AST* varDeclNode = stmt.get();
+                            
+                            if (var && var->isArray && var->arraySize > 0) {
+                                // Array initialization: allocate memory and store size
+                                // Memory layout: [size: i32][data: array elements]
+                                int elemSize = (var->elemType == "f64") ? 8 : 4;
+                                int totalSize = 4 + (var->arraySize * elemSize);  // 4 bytes for size + data
+                                
+                                // Allocate memory
+                                emitIndent(indent + 1, "i32.const " + to_string(memoryOffset + 4));
+                                emitIndent(indent + 1, "local.set $" + varName);
+                                
+                                // Store array size at base address - 4
+                                emitIndent(indent + 1, "i32.const " + to_string(memoryOffset));
+                                emitIndent(indent + 1, "i32.const " + to_string(var->arraySize));
+                                emitIndent(indent + 1, "i32.store");
+                                
+                                // Update memory offset for next allocation
+                                memoryOffset += totalSize;
+                                // Align to 8 bytes
+                                memoryOffset = (memoryOffset + 7) & ~7;
+                            } else if (var && varDeclNode && varDeclNode->kids.size() > 0) {
+                                AST* typeNode = varDeclNode->kids[0].get();
+                                bool isRecord = false;
+                                AST* recordTypeNode = nullptr;
+                                
+                                if (typeNode->kind == NodeKind::RecordType) {
+                                    isRecord = true;
+                                    recordTypeNode = typeNode;
+                                } else if (typeNode->kind == NodeKind::UserType && 
+                                         typeTable.count(typeNode->text) &&
+                                         typeTable[typeNode->text].kind == NodeKind::RecordType) {
+                                    isRecord = true;
+                                    TypeDef& td = typeTable[typeNode->text];
+                                    if (td.typeNode) recordTypeNode = td.typeNode;
+                                }
+                                
+                                if (isRecord && recordTypeNode) {
+                                    // Record initialization: allocate memory
+                                    // Calculate record size
+                                    int recordSize = 0;
+                                    for (auto& child : recordTypeNode->kids) {
+                                        if (child->kind == NodeKind::VarDecl && child->kids.size() > 0) {
+                                            AST* fieldTypeNode = child->kids[0].get();
+                                            if (fieldTypeNode->kind == NodeKind::PrimType) {
+                                                string piType = fieldTypeNode->text;
+                                                if (piType == "integer" || piType == "boolean") {
+                                                    recordSize += 4;
+                                                } else if (piType == "real") {
+                                                    recordSize += 8;
+                                                }
+                                            }
+                                        }
+                                    }
+                                    
+                                    if (recordSize > 0) {
+                                        emitIndent(indent + 1, "i32.const " + to_string(memoryOffset));
+                                        emitIndent(indent + 1, "local.set $" + varName);
+                                        memoryOffset += recordSize;
+                                        memoryOffset = (memoryOffset + 7) & ~7;
+                                    }
+                                } else if (stmt->kids.size() > 1) {
+                                    // Regular variable with initializer
+                                    compileExpression(stmt->kids[1].get(), indent + 1);
+                                    emitIndent(indent + 1, "local.set $" + varName);
+                                }
+                            } else if (stmt->kids.size() > 1) {
+                                // Regular variable with initializer
                                 compileExpression(stmt->kids[1].get(), indent + 1);
                                 emitIndent(indent + 1, "local.set $" + stmt->text);
                             }
