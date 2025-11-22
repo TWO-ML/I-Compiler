@@ -1,0 +1,13 @@
+type Int5 is array[5] integer
+var x : Int5
+var p : record
+  var y : integer
+end
+
+routine Main() is
+  for i in 1..5 loop
+    x[i] := i * 2
+  end
+  p.y := x[1]
+  print true xor false, not (1 = 2)
+end

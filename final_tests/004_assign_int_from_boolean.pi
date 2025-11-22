@@ -1,0 +1,12 @@
+// [OK] integer := boolean
+// Expect output: 1 0
+
+routine Main() is
+  var t : boolean is true
+  var f : boolean is false
+  var a : integer
+  var b : integer
+  a := t   // -> 1
+  b := f   // -> 0
+  print a, b
+end

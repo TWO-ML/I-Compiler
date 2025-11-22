@@ -2187,10 +2187,9 @@ private:
                     bool used = globalUsage.count(varName) && globalUsage[varName];
                     //TODO: if func call - save, other constants values - rm
                     if (!used) {
-                        toDelete.push_back(i);
                         unusedVarCount++;
                         addWarning(node->kids[i]->line, node->kids[i]->col,
-                            "unused variable '" + varName + "' removed");
+                            "unused variable '" + varName);
                     }
                 }
             }

@@ -1,0 +1,9 @@
+// [RUNTIME ERROR] boolean := integer with invalid value
+// Expect: runtime error (trap), since 2 is not 0/1
+
+routine Main() is
+  var b : boolean
+  var x : integer is 2
+  b := x
+  print b
+end

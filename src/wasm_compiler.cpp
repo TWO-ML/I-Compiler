@@ -15,7 +15,6 @@
 
 using namespace std;
 
-// Include all token and AST definitions from parser
 enum class TokenKind
 {
     Identifier, Integer, Real, Boolean,
@@ -387,6 +386,14 @@ public:
         emit("      (i32.const 10))");
         emit("    (i32.store (i32.const 0) (local.get $buf))");
         emit("    (i32.store (i32.const 4) (i32.const 2))");
+        emit("    (i32.store8");
+        emit("      (local.get $buf)");
+        emit("      (i32.add (i32.const 48) (local.get $value)))");
+        emit("    (i32.store8");
+        emit("      (i32.add (local.get $buf) (i32.const 1))");
+        emit("      (i32.const 10))");
+        emit("    (i32.store (i32.const 0) (local.get $buf))");
+        emit("    (i32.store (i32.const 4) (i32.const 2))");
         emit("    (i32.const 1)");
         emit("    (i32.const 0)");
         emit("    (i32.const 1)");
@@ -399,7 +406,7 @@ public:
         emit("    (call $print_i32 (i32.trunc_f64_s (local.get $value)))");
         emit("  )");
         emit("");
-        
+
         // Process global declarations and routines
         localScopes.push_back({});
         
@@ -1904,7 +1911,6 @@ struct Parser {
     }
 };
 
-// Include SemanticAnalyzer class from semantic_analyzer.cpp
 
 class SemanticAnalyzer {
 private:
@@ -1917,8 +1923,8 @@ private:
         int line, col;
         bool used = false;
         bool isRoutine = false;
-        vector<string> paramTypes;  // for func
-        string returnType;          // for func
+        vector<string> paramTypes;  
+        string returnType;          
     };
     
     vector<unordered_map<string, Symbol>> scopes;  // stack of visibility

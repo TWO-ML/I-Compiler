@@ -1,0 +1,9 @@
+// [OK] integer := real (round-to-nearest)
+// Expect output: 3
+
+routine Main() is
+  var r : real is 3.49
+  var i : integer
+  i := r   // should round to nearest integer
+  print i
+end

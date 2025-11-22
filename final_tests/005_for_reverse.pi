@@ -1,0 +1,8 @@
+// [OK] for ... reverse
+// Expect output: 5 4 3 2 1
+
+routine Main() is
+  for i in 1..5 reverse loop
+    print i
+  end
+end

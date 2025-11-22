@@ -1,0 +1,9 @@
+routine Main() is
+  var a : integer is 5
+  var b : integer is 3
+  if a > b then
+    print a + b, a - b
+  else
+    print b
+  end
+end
