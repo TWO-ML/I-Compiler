@@ -235,6 +235,60 @@ private:
     unordered_map<string, TypeDef> typeTable;
     AST* rootAST = nullptr;
     
+    // Helper to get parameter types from function declaration
+    vector<string> getFunctionParamTypes(const string& funcName) {
+        vector<string> paramTypes;
+        if (!rootAST) return paramTypes;
+        
+        for (auto& child : rootAST->kids) {
+            if (child->kind == NodeKind::RoutineDecl && child->kids.size() > 0) {
+                AST* header = child->kids[0].get();
+                if (header->kind == NodeKind::RoutineHeader && header->text == funcName) {
+                    if (header->kids.size() > 0 && header->kids[0]->kind == NodeKind::Params) {
+                        AST* params = header->kids[0].get();
+                        for (auto& param : params->kids) {
+                            if (param->kind == NodeKind::Param && param->kids.size() > 0) {
+                                AST* typeNode = param->kids[0].get();
+                                if (typeNode->kind == NodeKind::PrimType) {
+                                    paramTypes.push_back(typeNode->text);
+                                } else {
+                                    paramTypes.push_back("integer"); // default
+                                }
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+        return paramTypes;
+    }
+    
+    // Helper to check if function has return type
+    bool hasFunctionReturnType(const string& funcName) {
+        if (!rootAST) return false;
+        
+        for (auto& child : rootAST->kids) {
+            if (child->kind == NodeKind::RoutineDecl && child->kids.size() > 0) {
+                AST* header = child->kids[0].get();
+                if (header->kind == NodeKind::RoutineHeader && header->text == funcName) {
+                    // Check if there's a return type (it's after Params, before body)
+                    for (size_t i = 0; i < header->kids.size(); i++) {
+                        AST* kid = header->kids[i].get();
+                        if (kid->kind == NodeKind::PrimType || kid->kind == NodeKind::UserType) {
+                            return true;
+                        }
+                        if (kid->kind == NodeKind::RoutineBodyBlock || kid->kind == NodeKind::RoutineBodyExpr) {
+                            break;
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+        return false;
+    }
+    
     string getWASMType(const string& piType) {
         if (piType == "integer") return "i32";
         if (piType == "real") return "f64";
@@ -374,26 +428,52 @@ public:
         emit("");
         
         buildTypeTable(root);
-        // Helper function to print i32 (simple)
+        // Helper function to print i32 (converts number to string)
         emit("  (func $print_i32 (param $value i32)");
         emit("    (local $buf i32)");
+        emit("    (local $end i32)");
+        emit("    (local $n i32)");
+        emit("    (local $digit i32)");
         emit("    (local.set $buf (i32.const 1024))");
-        emit("    (i32.store8");
-        emit("      (local.get $buf)");
-        emit("      (i32.add (i32.const 48) (local.get $value)))");
-        emit("    (i32.store8");
-        emit("      (i32.add (local.get $buf) (i32.const 1))");
-        emit("      (i32.const 10))");
+        emit("    (local.set $end (local.get $buf))");
+        emit("    (local.set $n (local.get $value))");
+        emit("    (if (i32.lt_s (local.get $n) (i32.const 0))");
+        emit("      (then");
+        emit("        (i32.store8 (local.get $end) (i32.const 45))");
+        emit("        (local.set $end (i32.add (local.get $end) (i32.const 1)))");
+        emit("        (local.set $n (i32.sub (i32.const 0) (local.get $n))))");
+        emit("      )");
+        emit("    )");
+        emit("    (if (i32.eq (local.get $n) (i32.const 0))");
+        emit("      (then");
+        emit("        (i32.store8 (local.get $end) (i32.const 48))");
+        emit("        (local.set $end (i32.add (local.get $end) (i32.const 1)))");
+        emit("      )");
+        emit("      (else");
+        emit("        (loop $loop");
+        emit("          (local.set $digit (i32.rem_u (local.get $n) (i32.const 10)))");
+        emit("          (local.set $n (i32.div_u (local.get $n) (i32.const 10)))");
+        emit("          (i32.store8 (local.get $end) (i32.add (i32.const 48) (local.get $digit)))");
+        emit("          (local.set $end (i32.add (local.get $end) (i32.const 1)))");
+        emit("          (br_if $loop (i32.ne (local.get $n) (i32.const 0)))");
+        emit("        )");
+        emit("        (local.set $n (local.get $buf))");
+        emit("        (local.set $buf (i32.sub (local.get $end) (i32.const 1)))");
+        emit("        (loop $reverse");
+        emit("          (local.set $digit (i32.load8_u (local.get $n)))");
+        emit("          (i32.store8 (local.get $n) (i32.load8_u (local.get $buf)))");
+        emit("          (i32.store8 (local.get $buf) (local.get $digit))");
+        emit("          (local.set $n (i32.add (local.get $n) (i32.const 1)))");
+        emit("          (local.set $buf (i32.sub (local.get $buf) (i32.const 1)))");
+        emit("          (br_if $reverse (i32.lt_u (local.get $n) (local.get $buf)))");
+        emit("        )");
+        emit("        (local.set $buf (i32.const 1024))");
+        emit("      )");
+        emit("    )");
+        emit("    (i32.store8 (local.get $end) (i32.const 10))");
+        emit("    (local.set $end (i32.add (local.get $end) (i32.const 1)))");
         emit("    (i32.store (i32.const 0) (local.get $buf))");
-        emit("    (i32.store (i32.const 4) (i32.const 2))");
-        emit("    (i32.store8");
-        emit("      (local.get $buf)");
-        emit("      (i32.add (i32.const 48) (local.get $value)))");
-        emit("    (i32.store8");
-        emit("      (i32.add (local.get $buf) (i32.const 1))");
-        emit("      (i32.const 10))");
-        emit("    (i32.store (i32.const 0) (local.get $buf))");
-        emit("    (i32.store (i32.const 4) (i32.const 2))");
+        emit("    (i32.store (i32.const 4) (i32.sub (local.get $end) (local.get $buf)))");
         emit("    (i32.const 1)");
         emit("    (i32.const 0)");
         emit("    (i32.const 1)");
@@ -538,8 +618,27 @@ public:
             }
             case NodeKind::Call: {
                 string funcName = expr->text;
-                for (auto& arg : expr->kids) {
-                    compileExpression(arg.get(), indent);
+                vector<string> paramTypes = getFunctionParamTypes(funcName);
+                
+                for (size_t i = 0; i < expr->kids.size(); i++) {
+                    string argType = compileExpression(expr->kids[i].get(), indent);
+                    string expectedType = (i < paramTypes.size()) ? paramTypes[i] : "integer";
+                    
+                    // Convert argument type if needed (same rules as assignment)
+                    if (expectedType == "integer" && argType == "f64") {
+                        // real -> integer (rounding)
+                        emitIndent(indent, "f64.nearest");
+                        emitIndent(indent, "i32.trunc_f64_s");
+                    } else if (expectedType == "integer" && argType == "i32") {
+                        // Check if source is real (we need to infer from expression)
+                        // For now, assume it's already integer
+                    } else if (expectedType == "real" && argType == "i32") {
+                        // integer -> real
+                        emitIndent(indent, "f64.convert_i32_s");
+                    } else if (expectedType == "boolean" && argType == "i32") {
+                        // integer -> boolean (runtime check will happen in assignment)
+                        // No conversion needed at call site, it's handled in assignment
+                    }
                 }
                 emitIndent(indent, "call $" + funcName);
                 return "i32";
@@ -552,11 +651,14 @@ public:
                     for (int i = localScopes.size() - 1; i >= 0; i--) {
                         if (localScopes[i].count(varName)) {
                             VarInfo* candidate = &localScopes[i][varName];
-                            if (!var || candidate->blockLevel <= currentBlockLevel) {
+                            // Choose variable with highest blockLevel <= currentBlockLevel (nearest in scope)
+                            if (!var || (candidate->blockLevel <= currentBlockLevel && 
+                                        candidate->blockLevel > var->blockLevel)) {
                                 var = candidate;
-                                if (candidate->blockLevel == currentBlockLevel) {
-                                    break;
-                                }
+                            }
+                            // If we found a variable in current scope, use it (shadowing)
+                            if (candidate->blockLevel == currentBlockLevel) {
+                                break;
                             }
                         }
                     }
@@ -577,12 +679,16 @@ public:
                         
                         for (size_t i = 1; i < expr->kids.size(); i++) {
                             if (expr->kids[i]->kind == NodeKind::Index) {
+                                // For fixed-size arrays: base+4 is first element
+                                // Stack: [base_address]
                                 compileExpression(expr->kids[i]->kids[0].get(), indent);
                                 emitIndent(indent, "i32.const 1");
-                                emitIndent(indent, "i32.sub");
+                                emitIndent(indent, "i32.sub");  // Convert 1-based to 0-based
                                 emitIndent(indent, "i32.const 4");
-                                emitIndent(indent, "i32.mul");
-                                emitIndent(indent, "i32.add");
+                                emitIndent(indent, "i32.mul");  // offset = index * 4
+                                emitIndent(indent, "i32.const 4");
+                                emitIndent(indent, "i32.add");  // base + 4 (skip size field)
+                                emitIndent(indent, "i32.add");  // base + 4 + offset
                                 emitIndent(indent, "i32.load");
                             } else if (expr->kids[i]->kind == NodeKind::Member) {
                                 string fieldName = expr->kids[i]->text;
@@ -741,11 +847,19 @@ public:
                             
                             if (lhs->kids.size() > 1 && lhs->kids[1]->kind == NodeKind::Index) {
                                 // Array assignment (convert from 1-based to 0-based)
+                                // Value is already on stack from RHS compilation
+                                // Save value to temp, compute address, then store
+                                emitIndent(indent, "local.tee $__temp_check");
                                 compileExpression(nameNode, indent);  // base address
                                 compileExpression(lhs->kids[1]->kids[0].get(), indent);  // index
                                 emitIndent(indent, "i32.const 1");
                                 emitIndent(indent, "i32.sub");  // Convert 1-based to 0-based
-                                emitIndent(indent, "i32.add");
+                                emitIndent(indent, "i32.const 4");
+                                emitIndent(indent, "i32.mul");  // offset = index * 4
+                                emitIndent(indent, "i32.const 4");
+                                emitIndent(indent, "i32.add");  // base + 4 (skip size field)
+                                emitIndent(indent, "i32.add");  // base + 4 + offset
+                                emitIndent(indent, "local.get $__temp_check");
                                 emitIndent(indent, "i32.store");
                             } else if (lhs->kids.size() > 1 && lhs->kids[1]->kind == NodeKind::Member) {
                                 // Record field assignment
@@ -797,12 +911,18 @@ public:
                                 }
                                 
                                 if (fieldOffset >= 0) {
+                                    // Value is already on stack from RHS compilation
+                                    // Save value to temp, compute address, then store
+                                    emitIndent(indent, "local.tee $__temp_check");
                                     compileExpression(nameNode, indent);
                                     emitIndent(indent, "i32.const " + to_string(fieldOffset));
-                                emitIndent(indent, "i32.add");
-                                emitIndent(indent, "i32.store");
+                                    emitIndent(indent, "i32.add");
+                                    emitIndent(indent, "local.get $__temp_check");
+                                    emitIndent(indent, "i32.store");
                                 } else {
+                                    emitIndent(indent, "local.tee $__temp_check");
                                     compileExpression(nameNode, indent);
+                                    emitIndent(indent, "local.get $__temp_check");
                                     emitIndent(indent, "i32.store");
                                 }
                             } else {
@@ -961,10 +1081,11 @@ public:
                     compileExpression(rangeNode, indent);
                     emitIndent(indent, "local.set " + arrBase);
                     
+                    // For fixed-size arrays, base points to size field
+                    // For dynamic arrays, size is stored at base-4
+                    // Try to read from base first (fixed-size), if that fails, use base-4
                     emitIndent(indent, "local.get " + arrBase);
-                    emitIndent(indent, "i32.const 4");
-                    emitIndent(indent, "i32.sub");
-                    emitIndent(indent, "i32.load");
+                    emitIndent(indent, "i32.load");  // Read size from base (fixed-size arrays)
                     emitIndent(indent, "local.set " + arrSize);
                     
                     emitIndent(indent, "i32.const 0");
@@ -979,10 +1100,12 @@ public:
                     emitIndent(indent + 2, "br_if $end");
                     
                     emitIndent(indent + 2, "local.get " + arrBase);
+                    emitIndent(indent + 2, "i32.const 4");
+                    emitIndent(indent + 2, "i32.add");  // base + 4 (skip size field)
                     emitIndent(indent + 2, "local.get " + idx);
                     emitIndent(indent + 2, "i32.const 4");
-                    emitIndent(indent + 2, "i32.mul");
-                    emitIndent(indent + 2, "i32.add");
+                    emitIndent(indent + 2, "i32.mul");  // offset = idx * 4
+                    emitIndent(indent + 2, "i32.add");  // base + 4 + offset
                     emitIndent(indent + 2, "i32.load");
                     emitIndent(indent + 2, "local.set $" + loopVarName);
                     
@@ -1017,8 +1140,12 @@ public:
                 break;
             }
             case NodeKind::Call: {
+                string funcName = stmt->text;
                 compileExpression(stmt, indent);
-                emitIndent(indent, "drop");
+                // Only drop if function returns a value
+                if (hasFunctionReturnType(funcName)) {
+                    emitIndent(indent, "drop");
+                }
                 break;
             }
             case NodeKind::Body: {
@@ -1302,12 +1429,13 @@ public:
                             if (var && var->isArray && var->arraySize > 0) {
                                 int elemSize = (var->elemType == "f64") ? 8 : 4;
                                 int totalSize = 4 + (var->arraySize * elemSize);
-                                emitIndent(indent + 1, "i32.const " + to_string(memoryOffset + 4));
-                                emitIndent(indent + 1, "local.set $" + actualVarName);
-                                
+                                // Store array size at base address
                                 emitIndent(indent + 1, "i32.const " + to_string(memoryOffset));
                                 emitIndent(indent + 1, "i32.const " + to_string(var->arraySize));
                                 emitIndent(indent + 1, "i32.store");
+                                // Set base address (points to size field, elements start at base+4)
+                                emitIndent(indent + 1, "i32.const " + to_string(memoryOffset));
+                                emitIndent(indent + 1, "local.set $" + actualVarName);
                                 
                                 memoryOffset += totalSize;
                                 memoryOffset = (memoryOffset + 7) & ~7;
