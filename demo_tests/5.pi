@@ -1,0 +1,10 @@
+//For loop range with reverse (4..1)
+//Expected output: 10
+routine Main() is
+    var s : integer is 0
+    for k in 1 .. 4 reverse loop
+        s := s + k
+        print s
+    end
+    print s   
+end

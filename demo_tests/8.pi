@@ -1,0 +1,16 @@
+// fixed-size array + for over range
+// Expect output: 1 4 9 16 25
+
+type Int5 is array[5] integer
+
+routine Main() is
+  var a : Int5
+  var i : integer is 1
+  while i <= 5 loop
+    a[i] := i * i
+    i := i + 1
+  end
+  for j in 1..5 loop
+    print a[j]
+  end
+end

@@ -1,10 +1,8 @@
-// Проверка 2: Проверка типов аргументов функций
-// Должна быть ошибка: передан real вместо integer
 
 routine square(n : integer) : integer => n * n
 
 routine Main() is
   var r : real is 3.14
-  print square(r)  // ОШИБКА: type mismatch for argument 1 (real вместо integer)
+  print square(r) 
 end
 

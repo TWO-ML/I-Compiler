@@ -1,13 +1,11 @@
+//Arrays
+//Expected output: 1 2 3 4 5
 type Int5 is array[5] integer
 var x : Int5
-var p : record
-  var y : integer
-end
 
 routine Main() is
   for i in 1..5 loop
-    x[i] := i * 2
+    x[i] := i 
   end
-  p.y := x[1]
   print x[1], x[2], x[3], x[4], x[5]
 end

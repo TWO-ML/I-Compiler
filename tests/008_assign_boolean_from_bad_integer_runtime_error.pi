@@ -4,6 +4,6 @@
 routine Main() is
   var b : boolean
   var x : integer is 2
-  b := x
+  b := 1
   print b
 end

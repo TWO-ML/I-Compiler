@@ -1,0 +1,10 @@
+//Arithmetic + assignment
+//Expected output: 60
+var x : integer is 5
+var y : integer is 10
+var z : integer
+
+routine Main() is
+    z := x * (y + 2)
+    print z   
+end

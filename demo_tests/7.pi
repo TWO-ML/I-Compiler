@@ -1,0 +1,7 @@
+//Function sqr(x)
+//Expected output: 25
+routine sqr(x : integer) : integer => x * x
+
+routine Main() is
+    print sqr(5)
+end

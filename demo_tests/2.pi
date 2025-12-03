@@ -1,0 +1,14 @@
+
+/* Boolean logic + if-statement
+Expected output:
+1 */
+var a : integer is 10
+var b : integer is 20
+
+routine Main() is
+    if a < b then
+        print 1
+    else
+        print 0
+    end
+end

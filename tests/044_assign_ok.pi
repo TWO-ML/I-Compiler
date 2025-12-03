@@ -3,4 +3,5 @@ type Int5 is array[5] integer
 routine Main() is
   var x : integer
   x := 1 + 2
+  print x, x
 end

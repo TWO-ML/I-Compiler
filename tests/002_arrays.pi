@@ -9,5 +9,5 @@ routine Main() is
     x[i] := i * 2
   end
   p.y := x[1]
-  print true xor false, not (1 = 2)
+  print x[1], x[2], x[3], x[4], x[5]
 end

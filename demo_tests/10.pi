@@ -1,0 +1,18 @@
+//If/else with boolean logic
+//Expected output: 0 1
+routine Main() is
+    var t : boolean is true
+    var f : boolean is false
+
+    if t and f then
+        print 1
+    else
+        print 0
+    end
+
+    if t or f then
+        print 1
+    else
+        print 0
+    end
+end

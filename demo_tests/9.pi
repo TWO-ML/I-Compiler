@@ -1,0 +1,14 @@
+//Record test: automatic storage + field access
+//Expected output: 7
+type Point is record
+    var x : integer
+    var y : integer
+end
+
+var p : Point
+
+routine Main() is
+    p.x := 3
+    p.y := 4
+    print p.x + p.y  
+end

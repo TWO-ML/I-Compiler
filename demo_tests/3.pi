@@ -1,0 +1,13 @@
+//While loop + counter
+//Expected output: 15
+routine Main() is
+    var i : integer is 1
+    var sum : integer is 0
+
+    while i <= 5 loop
+        sum := sum + i
+        i := i + 1
+    end
+
+    print sum   
+end

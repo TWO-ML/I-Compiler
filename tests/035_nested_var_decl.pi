@@ -14,4 +14,7 @@ routine Main() is
   b.p1.x := 1
   b.p2.y := 2
   b.data[1][3] := 3.14
+  print(b.p1.x)
+  print(b.p2.y)
+  print(b.data[1][3])
 end
