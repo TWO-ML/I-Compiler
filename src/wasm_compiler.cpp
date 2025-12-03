@@ -77,11 +77,23 @@ struct Lexer
             }
             if (peek() == '/' && peek(1) == '*')
             {
+                int commentStartLine = line, commentStartCol = col;
                 advance(); advance();
+                bool terminated = false;
                 while (!eof())
                 {
-                    if (peek() == '*' && peek(1) == '/') { advance(); advance(); break; }
+                    if (peek() == '*' && peek(1) == '/') { 
+                        advance(); advance(); 
+                        terminated = true;
+                        break; 
+                    }
                     advance();
+                }
+                if (!terminated) {
+                    // Unterminated block comment - set error
+                    pendingErrorToken = make(TokenKind::Error, "unterminated block comment", commentStartLine, commentStartCol);
+                    hasPendingError = true;
+                    return;
                 }
                 continue;
             }
@@ -222,7 +234,7 @@ private:
     };
     
     unordered_map<string, VarInfo> globalVars;
-    vector<unordered_map<string, VarInfo>> localScopes;
+    vector<unordered_map<string, vector<VarInfo>>> localScopes;
     unordered_map<string, int> routineParams;
     unordered_map<AST*, string> currentVarDeclToUniqueName;
     int currentBlockLevel = 0;
@@ -330,6 +342,111 @@ private:
         return nullptr;
     }
     
+    // Get size of any type (primitive, record, or array)
+    int getTypeSize(AST* typeNode) {
+        if (!typeNode) return 4;
+        
+        if (typeNode->kind == NodeKind::PrimType) {
+            string piType = typeNode->text;
+            if (piType == "integer" || piType == "boolean") return 4;
+            if (piType == "real") return 8;
+            return 4;
+        }
+        
+        if (typeNode->kind == NodeKind::UserType) {
+            string typeName = typeNode->text;
+            if (typeTable.count(typeName)) {
+                TypeDef& td = typeTable[typeName];
+                return getTypeSize(td.typeNode);
+            }
+            // Look up in AST
+            if (rootAST) {
+                for (auto& child : rootAST->kids) {
+                    if (child->kind == NodeKind::TypeDecl && child->text == typeName && child->kids.size() > 0) {
+                        return getTypeSize(child->kids[0].get());
+                    }
+                }
+            }
+            return 4;
+        }
+        
+        if (typeNode->kind == NodeKind::RecordType) {
+            int size = 0;
+            for (auto& child : typeNode->kids) {
+                if (child->kind == NodeKind::VarDecl && child->kids.size() > 0) {
+                    size += getTypeSize(child->kids[0].get());
+                }
+            }
+            return size > 0 ? size : 4;
+        }
+        
+        if (typeNode->kind == NodeKind::ArrayType) {
+            // Arrays store size + elements, but we just return pointer size for local vars
+            // The actual allocation handles the full size
+            int arraySize = 0;
+            int elemSize = 4;
+            if (typeNode->kids.size() > 0) {
+                // First child might be size
+                if (typeNode->kids[0]->kind == NodeKind::Primary) {
+                    arraySize = stoi(typeNode->kids[0]->text);
+                }
+                // Last child is element type
+                if (typeNode->kids.size() > 1) {
+                    elemSize = getTypeSize(typeNode->kids.back().get());
+                } else if (typeNode->kids.size() == 1 && typeNode->kids[0]->kind != NodeKind::Primary) {
+                    elemSize = getTypeSize(typeNode->kids[0].get());
+                }
+            }
+            return 4 + arraySize * elemSize; // size field + elements
+        }
+        
+        return 4;
+    }
+    
+    // Get size of a named type
+    int getTypeSizeByName(const string& typeName) {
+        if (typeName == "integer" || typeName == "boolean") return 4;
+        if (typeName == "real") return 8;
+        
+        if (typeTable.count(typeName)) {
+            TypeDef& td = typeTable[typeName];
+            return getTypeSize(td.typeNode);
+        }
+        
+        if (rootAST) {
+            for (auto& child : rootAST->kids) {
+                if (child->kind == NodeKind::TypeDecl && child->text == typeName && child->kids.size() > 0) {
+                    return getTypeSize(child->kids[0].get());
+                }
+            }
+        }
+        return 4;
+    }
+    
+    // Get the field type name for a record field
+    string getRecordFieldTypeName(const string& recordTypeName, const string& fieldName) {
+        if (rootAST) {
+            for (auto& child : rootAST->kids) {
+                if (child->kind == NodeKind::TypeDecl && child->text == recordTypeName && child->kids.size() > 0) {
+                    AST* typeNode = child->kids[0].get();
+                    if (typeNode && typeNode->kind == NodeKind::RecordType) {
+                        for (auto& field : typeNode->kids) {
+                            if (field->kind == NodeKind::VarDecl && field->text == fieldName && field->kids.size() > 0) {
+                                AST* fieldTypeNode = field->kids[0].get();
+                                if (fieldTypeNode->kind == NodeKind::PrimType) {
+                                    return fieldTypeNode->text;
+                                } else if (fieldTypeNode->kind == NodeKind::UserType) {
+                                    return fieldTypeNode->text;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return "unknown";
+    }
+
     int getRecordFieldOffset(const string& recordTypeName, const string& fieldName, AST* root) {
         if (!root) return -1;
         
@@ -343,15 +460,7 @@ private:
                             return offset;
                         }
                         if (child->kids.size() > 0) {
-                            AST* fieldTypeNode = child->kids[0].get();
-                            if (fieldTypeNode->kind == NodeKind::PrimType) {
-                                string piType = fieldTypeNode->text;
-                                if (piType == "integer" || piType == "boolean") {
-                                    offset += 4;
-                                } else if (piType == "real") {
-                                    offset += 8;
-                                }
-                            }
+                            offset += getTypeSize(child->kids[0].get());
                         }
                     }
                 }
@@ -441,7 +550,7 @@ public:
         emit("      (then");
         emit("        (i32.store8 (local.get $end) (i32.const 45))");
         emit("        (local.set $end (i32.add (local.get $end) (i32.const 1)))");
-        emit("        (local.set $n (i32.sub (i32.const 0) (local.get $n))))");
+        emit("        (local.set $n (i32.sub (i32.const 0) (local.get $n)))");
         emit("      )");
         emit("    )");
         emit("    (if (i32.eq (local.get $n) (i32.const 0))");
@@ -532,8 +641,15 @@ public:
                 VarInfo* var = nullptr;
                 for (int i = localScopes.size() - 1; i >= 0; i--) {
                     if (localScopes[i].count(varName)) {
-                        var = &localScopes[i][varName];
-                        break;
+                        vector<VarInfo>& candidates = localScopes[i][varName];
+                        for (auto& candidate : candidates) {
+                            if (candidate.blockLevel <= currentBlockLevel) {
+                                if (!var || candidate.blockLevel > var->blockLevel) {
+                                    var = &candidate;
+                                }
+                            }
+                        }
+                        if (var) break;
                     }
                 }
                 if (!var && globalVars.count(varName)) {
@@ -543,7 +659,7 @@ public:
                     if (var->isGlobal) {
                         emitIndent(indent, "global.get $" + varName);
                     } else {
-                        emitIndent(indent, "local.get $" + varName);
+                        emitIndent(indent, "local.get $" + var->name);
                     }
                 }
                 return var ? var->type : "i32";
@@ -650,15 +766,14 @@ public:
                     AST* varDeclNode = nullptr;
                     for (int i = localScopes.size() - 1; i >= 0; i--) {
                         if (localScopes[i].count(varName)) {
-                            VarInfo* candidate = &localScopes[i][varName];
-                            // Choose variable with highest blockLevel <= currentBlockLevel (nearest in scope)
-                            if (!var || (candidate->blockLevel <= currentBlockLevel && 
-                                        candidate->blockLevel > var->blockLevel)) {
-                                var = candidate;
-                            }
-                            // If we found a variable in current scope, use it (shadowing)
-                            if (candidate->blockLevel == currentBlockLevel) {
-                                break;
+                            vector<VarInfo>& candidates = localScopes[i][varName];
+                            // Find the variable with highest blockLevel <= currentBlockLevel
+                            for (auto& candidate : candidates) {
+                                if (candidate.blockLevel <= currentBlockLevel) {
+                                    if (!var || candidate.blockLevel > var->blockLevel) {
+                                        var = &candidate;
+                                    }
+                                }
                             }
                         }
                     }
@@ -677,73 +792,102 @@ public:
                             emitIndent(indent, "local.get $" + var->name);
                         }
                         
+                        // Track current type for nested access
+                        string currentTypeName = "unknown";
+                        if (varDeclNode && varDeclNode->kids.size() > 0) {
+                            AST* typeNode = varDeclNode->kids[0].get();
+                            if (typeNode->kind == NodeKind::UserType) {
+                                currentTypeName = typeNode->text;
+                            } else if (typeNode->kind == NodeKind::RecordType) {
+                                currentTypeName = "record";
+                            } else if (typeNode->kind == NodeKind::ArrayType) {
+                                currentTypeName = "array";
+                            }
+                        }
+                        
+                        // For variables that are arrays, set up type info
+                        if (var && var->isArray && varDeclNode) {
+                            AST* typeNode = varDeclNode->kids[0].get();
+                            if (typeNode && typeNode->kind == NodeKind::UserType) {
+                                currentTypeName = typeNode->text;
+                            }
+                        }
+                        
                         for (size_t i = 1; i < expr->kids.size(); i++) {
                             if (expr->kids[i]->kind == NodeKind::Index) {
                                 // For fixed-size arrays: base+4 is first element
                                 // Stack: [base_address]
-                                compileExpression(expr->kids[i]->kids[0].get(), indent);
-                                emitIndent(indent, "i32.const 1");
-                                emitIndent(indent, "i32.sub");  // Convert 1-based to 0-based
-                                emitIndent(indent, "i32.const 4");
-                                emitIndent(indent, "i32.mul");  // offset = index * 4
-                                emitIndent(indent, "i32.const 4");
-                                emitIndent(indent, "i32.add");  // base + 4 (skip size field)
-                                emitIndent(indent, "i32.add");  // base + 4 + offset
-                                emitIndent(indent, "i32.load");
-                            } else if (expr->kids[i]->kind == NodeKind::Member) {
-                                string fieldName = expr->kids[i]->text;
-                                string recordTypeName = "unknown";
-                                if (varDeclNode && varDeclNode->kids.size() > 0) {
-                                    AST* typeNode = varDeclNode->kids[0].get();
-                                    if (typeNode->kind == NodeKind::UserType) {
-                                        recordTypeName = typeNode->text;
-                                    } else if (typeNode->kind == NodeKind::RecordType) {
-                                        recordTypeName = "record";
-                                    }
-                                }
                                 
-                                // Get field offset
-                                int fieldOffset = -1;
-                                if (rootAST) {
-                                    if (recordTypeName != "unknown" && recordTypeName != "record") {
-                                        fieldOffset = getRecordFieldOffset(recordTypeName, fieldName, rootAST);
-                                    } else if (varDeclNode) {
-                                        // Try to get from inline record type
-                                        if (varDeclNode->kids.size() > 0) {
-                                            AST* typeNode = varDeclNode->kids[0].get();
-                                            if (typeNode->kind == NodeKind::RecordType) {
-                                                int offset = 0;
-                                                for (auto& child : typeNode->kids) {
-                                                    if (child->kind == NodeKind::VarDecl) {
-                                                        if (child->text == fieldName) {
-                                                            fieldOffset = offset;
-                                                            break;
-                                                        }
-                                                        if (child->kids.size() > 0) {
-                                                            AST* fieldTypeNode = child->kids[0].get();
-                                                            if (fieldTypeNode->kind == NodeKind::PrimType) {
-                                                                string piType = fieldTypeNode->text;
-                                                                if (piType == "integer" || piType == "boolean") {
-                                                                    offset += 4;
-                                                                } else if (piType == "real") {
-                                                                    offset += 8;
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-                                                }
+                                // Get element size based on current type
+                                int elemSize = 4;
+                                string elemTypeName = "integer";
+                                if (currentTypeName != "unknown" && typeTable.count(currentTypeName)) {
+                                    TypeDef& td = typeTable[currentTypeName];
+                                    if (td.kind == NodeKind::ArrayType && td.typeNode) {
+                                        // Get element type from array type
+                                        AST* arrType = td.typeNode;
+                                        // Last child should be element type
+                                        if (arrType->kids.size() > 0) {
+                                            AST* lastChild = arrType->kids.back().get();
+                                            if (lastChild->kind == NodeKind::PrimType) {
+                                                elemTypeName = lastChild->text;
+                                                if (lastChild->text == "real") elemSize = 8;
+                                            } else if (lastChild->kind == NodeKind::UserType) {
+                                                elemTypeName = lastChild->text;
+                                                elemSize = getTypeSizeByName(lastChild->text);
                                             }
                                         }
                                     }
                                 }
                                 
+                                compileExpression(expr->kids[i]->kids[0].get(), indent);
+                                emitIndent(indent, "i32.const 1");
+                                emitIndent(indent, "i32.sub");  // Convert 1-based to 0-based
+                                emitIndent(indent, "i32.const " + to_string(elemSize));
+                                emitIndent(indent, "i32.mul");  // offset = index * elemSize
+                                emitIndent(indent, "i32.const 4");
+                                emitIndent(indent, "i32.add");  // base + 4 (skip size field)
+                                emitIndent(indent, "i32.add");  // base + 4 + offset
+                                
+                                // Check if there are more accessors after this
+                                bool isLastAccessor = (i == expr->kids.size() - 1);
+                                
+                                // Check if element type is primitive (need to load) or complex (don't load yet)
+                                bool elemIsPrimitive = (elemTypeName == "integer" || elemTypeName == "real" || elemTypeName == "boolean");
+                                
+                                if (isLastAccessor && elemIsPrimitive) {
+                                    emitIndent(indent, "i32.load");
+                                }
+                                // If not last or element is complex, don't load - just have address on stack
+                                
+                                // Update current type for next iteration
+                                currentTypeName = elemTypeName;
+                            } else if (expr->kids[i]->kind == NodeKind::Member) {
+                                string fieldName = expr->kids[i]->text;
+                                
+                                // Get field offset using current type
+                                int fieldOffset = -1;
+                                if (rootAST && currentTypeName != "unknown" && currentTypeName != "record") {
+                                    fieldOffset = getRecordFieldOffset(currentTypeName, fieldName, rootAST);
+                                }
+                                
+                                // Check if this is the last accessor (we need to load) or not (just offset)
+                                bool isLastAccessor = (i == expr->kids.size() - 1);
+                                
                                 if (fieldOffset >= 0) {
                                     emitIndent(indent, "i32.const " + to_string(fieldOffset));
                                     emitIndent(indent, "i32.add");
-                                    emitIndent(indent, "i32.load");
+                                    if (isLastAccessor) {
+                                        emitIndent(indent, "i32.load");
+                                    }
+                                    // Don't load if not the last - just compute the address
+                                    // Update current type for the next iteration
+                                    currentTypeName = getRecordFieldTypeName(currentTypeName, fieldName);
                                 } else {
-                                    // Fallback
-                                    emitIndent(indent, "i32.load");
+                                    // Fallback for unknown offset
+                                    if (isLastAccessor) {
+                                        emitIndent(indent, "i32.load");
+                                    }
                                 }
                             }
                         }
@@ -809,8 +953,15 @@ public:
                         AST* varDeclNode = nullptr;
                         for (int i = localScopes.size() - 1; i >= 0; i--) {
                             if (localScopes[i].count(varName)) {
-                                var = &localScopes[i][varName];
-                                break;
+                                vector<VarInfo>& candidates = localScopes[i][varName];
+                                for (auto& candidate : candidates) {
+                                    if (candidate.blockLevel <= currentBlockLevel) {
+                                        if (!var || candidate.blockLevel > var->blockLevel) {
+                                            var = &candidate;
+                                        }
+                                    }
+                                }
+                                if (var) break;
                             }
                         }
                         if (!var && globalVars.count(varName)) {
@@ -833,10 +984,7 @@ public:
                                 emitIndent(indent, "local.tee $__temp_check");
                                 emitIndent(indent, "i32.const 1");
                                 emitIndent(indent, "i32.gt_u");
-                                emitIndent(indent, "if");
-                                emitIndent(indent + 1, "then");
-                                emitIndent(indent + 1, "unreachable");
-                                emitIndent(indent + 1, ")");
+                                emitIndent(indent, "(if (then unreachable))");
                                 emitIndent(indent, "local.get $__temp_check");
                             } else if (lhsPIType == "real" && rhsPIType == "integer") {
                                 emitIndent(indent, "f64.convert_i32_s");
@@ -845,86 +993,91 @@ public:
                             } else if (lhsPIType == "integer" && rhsPIType == "boolean") {
                             }
                             
-                            if (lhs->kids.size() > 1 && lhs->kids[1]->kind == NodeKind::Index) {
-                                // Array assignment (convert from 1-based to 0-based)
-                                // Value is already on stack from RHS compilation
-                                // Save value to temp, compute address, then store
+                            if (lhs->kids.size() > 1 && (lhs->kids[1]->kind == NodeKind::Index || lhs->kids[1]->kind == NodeKind::Member)) {
+                                // Nested access assignment (array index or member access, possibly multiple levels)
+                                // First, save the RHS value
                                 emitIndent(indent, "local.tee $__temp_check");
-                                compileExpression(nameNode, indent);  // base address
-                                compileExpression(lhs->kids[1]->kids[0].get(), indent);  // index
-                                emitIndent(indent, "i32.const 1");
-                                emitIndent(indent, "i32.sub");  // Convert 1-based to 0-based
-                                emitIndent(indent, "i32.const 4");
-                                emitIndent(indent, "i32.mul");  // offset = index * 4
-                                emitIndent(indent, "i32.const 4");
-                                emitIndent(indent, "i32.add");  // base + 4 (skip size field)
-                                emitIndent(indent, "i32.add");  // base + 4 + offset
-                                emitIndent(indent, "local.get $__temp_check");
-                                emitIndent(indent, "i32.store");
-                            } else if (lhs->kids.size() > 1 && lhs->kids[1]->kind == NodeKind::Member) {
-                                // Record field assignment
-                                string fieldName = lhs->kids[1]->text;
-                                // Get record type name
-                                string recordTypeName = "unknown";
+                                
+                                // Get base address
+                                compileExpression(nameNode, indent);
+                                
+                                // Track current type for nested access
+                                string currentTypeName = "unknown";
                                 if (varDeclNode && varDeclNode->kids.size() > 0) {
                                     AST* typeNode = varDeclNode->kids[0].get();
                                     if (typeNode->kind == NodeKind::UserType) {
-                                        recordTypeName = typeNode->text;
+                                        currentTypeName = typeNode->text;
                                     } else if (typeNode->kind == NodeKind::RecordType) {
-                                        recordTypeName = "record";
+                                        currentTypeName = "record";
+                                    } else if (typeNode->kind == NodeKind::ArrayType) {
+                                        currentTypeName = "array";
                                     }
                                 }
                                 
-                                // Get field offset
-                                int fieldOffset = -1;
-                                if (rootAST) {
-                                    if (recordTypeName != "unknown" && recordTypeName != "record") {
-                                        fieldOffset = getRecordFieldOffset(recordTypeName, fieldName, rootAST);
-                                    } else if (varDeclNode) {
-                                        // Try to get from inline record type
-                                        if (varDeclNode->kids.size() > 0) {
-                                            AST* typeNode = varDeclNode->kids[0].get();
-                                            if (typeNode->kind == NodeKind::RecordType) {
-                                                int offset = 0;
-                                                for (auto& child : typeNode->kids) {
-                                                    if (child->kind == NodeKind::VarDecl) {
-                                                        if (child->text == fieldName) {
-                                                            fieldOffset = offset;
-                                                            break;
-                                                        }
-                                                        if (child->kids.size() > 0) {
-                                                            AST* fieldTypeNode = child->kids[0].get();
-                                                            if (fieldTypeNode->kind == NodeKind::PrimType) {
-                                                                string piType = fieldTypeNode->text;
-                                                                if (piType == "integer" || piType == "boolean") {
-                                                                    offset += 4;
-                                                                } else if (piType == "real") {
-                                                                    offset += 8;
-                                                                }
-                                                            }
-                                                        }
+                                // For variables that are arrays, set up type info
+                                if (var && var->isArray && varDeclNode) {
+                                    AST* typeNode = varDeclNode->kids[0].get();
+                                    if (typeNode && typeNode->kind == NodeKind::UserType) {
+                                        currentTypeName = typeNode->text;
+                                    }
+                                }
+                                
+                                // Process all member/index accesses
+                                for (size_t mi = 1; mi < lhs->kids.size(); mi++) {
+                                    if (lhs->kids[mi]->kind == NodeKind::Member) {
+                                        string fieldName = lhs->kids[mi]->text;
+                                        int fieldOffset = -1;
+                                        
+                                        if (rootAST && currentTypeName != "unknown" && currentTypeName != "record") {
+                                            fieldOffset = getRecordFieldOffset(currentTypeName, fieldName, rootAST);
+                                        }
+                                        
+                                        if (fieldOffset >= 0) {
+                                            emitIndent(indent, "i32.const " + to_string(fieldOffset));
+                                            emitIndent(indent, "i32.add");
+                                        }
+                                        
+                                        // Update current type for next iteration
+                                        currentTypeName = getRecordFieldTypeName(currentTypeName, fieldName);
+                                    } else if (lhs->kids[mi]->kind == NodeKind::Index) {
+                                        // Array index within nested access
+                                        // Get element size based on current type
+                                        int elemSize = 4;
+                                        string elemTypeName = "integer";
+                                        if (currentTypeName != "unknown" && typeTable.count(currentTypeName)) {
+                                            TypeDef& td = typeTable[currentTypeName];
+                                            if (td.kind == NodeKind::ArrayType && td.typeNode) {
+                                                AST* arrType = td.typeNode;
+                                                if (arrType->kids.size() > 0) {
+                                                    AST* lastChild = arrType->kids.back().get();
+                                                    if (lastChild->kind == NodeKind::PrimType) {
+                                                        elemTypeName = lastChild->text;
+                                                        if (lastChild->text == "real") elemSize = 8;
+                                                    } else if (lastChild->kind == NodeKind::UserType) {
+                                                        elemTypeName = lastChild->text;
+                                                        elemSize = getTypeSizeByName(lastChild->text);
                                                     }
                                                 }
                                             }
                                         }
+                                        
+                                        compileExpression(lhs->kids[mi]->kids[0].get(), indent);
+                                        emitIndent(indent, "i32.const 1");
+                                        emitIndent(indent, "i32.sub");
+                                        emitIndent(indent, "i32.const " + to_string(elemSize));
+                                        emitIndent(indent, "i32.mul");
+                                        emitIndent(indent, "i32.const 4");
+                                        emitIndent(indent, "i32.add");
+                                        emitIndent(indent, "i32.add");
+                                        
+                                        // Update current type for next iteration
+                                        currentTypeName = elemTypeName;
                                     }
                                 }
                                 
-                                if (fieldOffset >= 0) {
-                                    // Value is already on stack from RHS compilation
-                                    // Save value to temp, compute address, then store
-                                    emitIndent(indent, "local.tee $__temp_check");
-                                    compileExpression(nameNode, indent);
-                                    emitIndent(indent, "i32.const " + to_string(fieldOffset));
-                                    emitIndent(indent, "i32.add");
-                                    emitIndent(indent, "local.get $__temp_check");
-                                    emitIndent(indent, "i32.store");
-                                } else {
-                                    emitIndent(indent, "local.tee $__temp_check");
-                                    compileExpression(nameNode, indent);
-                                    emitIndent(indent, "local.get $__temp_check");
-                                    emitIndent(indent, "i32.store");
-                                }
+                                // Store the value
+                                emitIndent(indent, "local.get $__temp_check");
+                                emitIndent(indent, "i32.store");
                             } else {
                                 if (var->isGlobal) {
                                     emitIndent(indent, "global.set $" + varName);
@@ -1149,9 +1302,12 @@ public:
                 break;
             }
             case NodeKind::Body: {
+                // Nested Body (e.g., from if simplification) - increment block level
+                currentBlockLevel++;
                 for (auto& child : stmt->kids) {
                     compileStatement(child.get(), indent);
                 }
+                currentBlockLevel--;
                 break;
             }
             case NodeKind::VarDecl: {
@@ -1161,8 +1317,15 @@ public:
                 VarInfo* var = nullptr;
                 for (int i = localScopes.size() - 1; i >= 0; i--) {
                     if (localScopes[i].count(varName)) {
-                        var = &localScopes[i][varName];
-                        break;
+                        vector<VarInfo>& candidates = localScopes[i][varName];
+                        // Find the variable matching the actualVarName
+                        for (auto& candidate : candidates) {
+                            if (candidate.name == actualVarName) {
+                                var = &candidate;
+                                break;
+                            }
+                        }
+                        if (var) break;
                     }
                 }
                 if (var && stmt->kids.size() > 1) {
@@ -1207,8 +1370,40 @@ public:
                 }
                 var.type = "i32";
             } else if (typeNode->kind == NodeKind::UserType) {
-                string resolvedType = resolveUserType(typeNode->text);
-                var.type = resolvedType;
+                string typeName = typeNode->text;
+                // Check if user type is an array type
+                if (typeTable.count(typeName)) {
+                    TypeDef& td = typeTable[typeName];
+                    if (td.kind == NodeKind::ArrayType) {
+                        var.isArray = true;
+                        AST* arrayTypeNode = td.typeNode;
+                        if (arrayTypeNode->kids.size() >= 1) {
+                            AST* sizeNode = arrayTypeNode->kids[0].get();
+                            if (sizeNode && sizeNode->kind == NodeKind::Primary) {
+                                try {
+                                    var.arraySize = stoi(sizeNode->text);
+                                } catch (...) {
+                                    var.arraySize = -1;
+                                }
+                            }
+                        }
+                        if (arrayTypeNode->kids.size() > 1) {
+                            AST* elemType = arrayTypeNode->kids[1].get();
+                            if (elemType->kind == NodeKind::PrimType) {
+                                var.elemType = getWASMType(elemType->text);
+                            } else if (elemType->kind == NodeKind::UserType) {
+                                var.elemType = resolveUserType(elemType->text);
+                            }
+                        }
+                        var.type = "i32";
+                    } else {
+                        string resolvedType = resolveUserType(typeName);
+                        var.type = resolvedType;
+                    }
+                } else {
+                    string resolvedType = resolveUserType(typeName);
+                    var.type = resolvedType;
+                }
             } else if (typeNode->kind == NodeKind::RecordType) {
                 var.type = "i32";
             }
@@ -1242,7 +1437,7 @@ public:
         } else {
             var.isGlobal = false;
             var.localIndex = localCounter++;
-            localScopes.back()[varName] = var;
+            localScopes.back()[varName].push_back(var);
         }
     }
     
@@ -1253,7 +1448,8 @@ public:
                 if (child->kind == NodeKind::VarDecl) {
                     varDeclsWithLevel.push_back({child.get(), blockLevel});
                 } else if (child->kind == NodeKind::Body) {
-                    collectLocalVars(child.get(), varDeclsWithLevel, blockLevel);
+                    // Nested Body (e.g., from if simplification) - increment block level
+                    collectLocalVars(child.get(), varDeclsWithLevel, blockLevel + 1);
                 } else if (child->kind == NodeKind::If || child->kind == NodeKind::While) {
                     for (size_t i = 1; i < child->kids.size(); i++) {
                         if (child->kids[i]->kind == NodeKind::Body) {
@@ -1320,7 +1516,7 @@ public:
                     var.name = paramName;
                     var.type = paramType;
                     var.localIndex = localCounter++;
-                    localScopes.back()[paramName] = var;
+                    localScopes.back()[paramName].push_back(var);
                 }
             }
         }
@@ -1361,7 +1557,7 @@ public:
                 var.blockLevel = blockLevel;
                 var.isGlobal = false;
                 var.localIndex = localCounter++;
-                localScopes.back()[baseName] = var;
+                localScopes.back()[baseName].push_back(var);
                 emitIndent(indent + 1, "(local $" + uniqueName + " " + var.type + ")");
             }
         }
@@ -1372,18 +1568,18 @@ public:
             var.type = "i32";
             var.isGlobal = false;
             var.localIndex = localCounter++;
-            localScopes.back()[loopVar] = var;
+            localScopes.back()[loopVar].push_back(var);
             emitIndent(indent + 1, "(local $" + loopVar + " i32)");
             
             string startLocal = "start_" + loopVar;
             string endLocal = "end_" + loopVar;
             var.name = startLocal;
             var.localIndex = localCounter++;
-            localScopes.back()[startLocal] = var;
+            localScopes.back()[startLocal].push_back(var);
             emitIndent(indent + 1, "(local $" + startLocal + " i32)");
             var.name = endLocal;
             var.localIndex = localCounter++;
-            localScopes.back()[endLocal] = var;
+            localScopes.back()[endLocal].push_back(var);
             emitIndent(indent + 1, "(local $" + endLocal + " i32)");
             
             string arrBase = "arr_base_" + loopVar;
@@ -1391,15 +1587,15 @@ public:
             string idx = "idx_" + loopVar;
             var.name = arrBase;
             var.localIndex = localCounter++;
-            localScopes.back()[arrBase] = var;
+            localScopes.back()[arrBase].push_back(var);
             emitIndent(indent + 1, "(local $" + arrBase + " i32)");
             var.name = arrSize;
             var.localIndex = localCounter++;
-            localScopes.back()[arrSize] = var;
+            localScopes.back()[arrSize].push_back(var);
             emitIndent(indent + 1, "(local $" + arrSize + " i32)");
             var.name = idx;
             var.localIndex = localCounter++;
-            localScopes.back()[idx] = var;
+            localScopes.back()[idx].push_back(var);
             emitIndent(indent + 1, "(local $" + idx + " i32)");
         }
         
@@ -1408,7 +1604,7 @@ public:
         tempVar.type = "i32";
         tempVar.isGlobal = false;
         tempVar.localIndex = localCounter++;
-        localScopes.back()["__temp_check"] = tempVar;
+        localScopes.back()["__temp_check"].push_back(tempVar);
         emitIndent(indent + 1, "(local $__temp_check i32)");
         
         if (header->kids.size() > bodyIndex) {
@@ -1419,12 +1615,17 @@ public:
                         if (stmt->kind == NodeKind::VarDecl) {
                             string varName = stmt->text;
                             VarInfo* var = nullptr;
-                            if (localScopes.back().count(varName)) {
-                                var = &localScopes.back()[varName];
-                            }
-                            
                             AST* varDeclNode = stmt.get();
-                            string actualVarName = currentVarDeclToUniqueName.count(varDeclNode) ? currentVarDeclToUniqueName[varDeclNode] : (var ? var->name : varName);
+                            string actualVarName = currentVarDeclToUniqueName.count(varDeclNode) ? currentVarDeclToUniqueName[varDeclNode] : varName;
+                            if (localScopes.back().count(varName)) {
+                                vector<VarInfo>& candidates = localScopes.back()[varName];
+                                for (auto& candidate : candidates) {
+                                    if (candidate.name == actualVarName) {
+                                        var = &candidate;
+                                        break;
+                                    }
+                                }
+                            }
                             
                             if (var && var->isArray && var->arraySize > 0) {
                                 int elemSize = (var->elemType == "f64") ? 8 : 4;
@@ -1456,20 +1657,8 @@ public:
                                 }
                                 
                                 if (isRecord && recordTypeNode) {
-                                    int recordSize = 0;
-                                    for (auto& child : recordTypeNode->kids) {
-                                        if (child->kind == NodeKind::VarDecl && child->kids.size() > 0) {
-                                            AST* fieldTypeNode = child->kids[0].get();
-                                            if (fieldTypeNode->kind == NodeKind::PrimType) {
-                                                string piType = fieldTypeNode->text;
-                                                if (piType == "integer" || piType == "boolean") {
-                                                    recordSize += 4;
-                                                } else if (piType == "real") {
-                                                    recordSize += 8;
-                                                }
-                                            }
-                                        }
-                                    }
+                                    // Use getTypeSize to properly calculate record size including nested records
+                                    int recordSize = getTypeSize(recordTypeNode);
                                     
                                     if (recordSize > 0) {
                                         emitIndent(indent + 1, "i32.const " + to_string(memoryOffset));

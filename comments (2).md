@@ -1,3 +1,5 @@
+исправь все эти замечания и самое главное - исправь, чтобы цифры не превращались в буквы после 10, ощущение, что там какая-то 16тиричная система вычисления или что-то еще. Но все цифры больше 10 в выводже должны оставаться цифрами
+
 ## ЗАМЕЧАНИЕ 1
 по документации к bool можно присваивать 0 или 1, а тут compilation error
 
@@ -11,6 +13,9 @@ routine Main() is
   print b
 end
 
+>> 008_assign_boolean_from_bad_integer_runtime_error
+-------------------------------------
+[Compilation error]
 
 (module
   (import "wasi_snapshot_preview1" "fd_write"
@@ -71,28 +76,37 @@ end
   )
 )
 
+
 ## ЗАМЕЧАНИЕ 2
-неправильный вывод на этом тесте, исправь
 
-// [OK] record + field access
-// Expect output: 3 4
+почему тут он выводит фигню 
 
+>> 035_nested_var_decl
+-------------------------------------
+0
+`
+0
+
+type Vec3  is array[3] real
 type Point is record
   var x : integer
   var y : integer
 end
-
-routine Main() is
-  var p : Point
-  p.x := 3
-  p.y := 4
-  print p.x, p.y
+type Box is record
+  var p1 : Point
+  var p2 : Point
+  var data : array[2] Vec3
 end
 
->> 010_record_field_access
--------------------------------------
-0
-0
+routine Main() is
+  var b : Box
+  b.p1.x := 1
+  b.p2.y := 2
+  b.data[1][3] := 3.14
+  print(b.p1.x)
+  print(b.p2.y)
+  print(b.data[1][3])
+end
 
 (module
   (import "wasi_snapshot_preview1" "fd_write"
@@ -132,27 +146,63 @@ end
   )
 
     (func $Main
-      (local $p i32)
+      (local $b i32)
       (local $__temp_check i32)
-      i32.const 2048
-      local.set $p
-      i32.const 3
-      local.get $p
+      i32.const 1
+      local.tee $__temp_check
+      local.get $b
       i32.const 0
       i32.add
+      local.get $__temp_check
       i32.store
-      i32.const 4
-      local.get $p
-      i32.const 4
+      i32.const 2
+      local.tee $__temp_check
+      local.get $b
+      i32.const 0
       i32.add
+      local.get $__temp_check
       i32.store
-      local.get $p
+      f64.const 3.140000
+      f64.nearest
+      i32.trunc_f64_s
+      local.tee $__temp_check
+      local.get $b
+      i32.const 0
+      i32.add
+      local.get $__temp_check
+      i32.store
+      local.get $b
       i32.const 0
       i32.add
       i32.load
+      i32.load
       call $print_i32
-      local.get $p
+      local.get $b
+      i32.const 0
+      i32.add
+      i32.load
+      i32.load
+      call $print_i32
+      local.get $b
+      i32.const 0
+      i32.add
+      i32.load
+      i32.const 1
+      i32.const 1
+      i32.sub
       i32.const 4
+      i32.mul
+      i32.const 4
+      i32.add
+      i32.add
+      i32.load
+      i32.const 3
+      i32.const 1
+      i32.sub
+      i32.const 4
+      i32.mul
+      i32.const 4
+      i32.add
       i32.add
       i32.load
       call $print_i32
@@ -164,9 +214,10 @@ end
 )
 
 
+
 ## ЗАМЕЧАНИЕ 3
 
-тут неправильный вывод исправь чтобы правильно компилировало
+почему цифры превращаются в буквы, исправь или скажи почему так и как мне запускать иначе
 
 // [OK] fixed-size array + for over range
 // Expect output: 1 4 9 16 25
@@ -187,13 +238,11 @@ end
 
 >> 011_array_fixed_and_for_range
 -------------------------------------
-0
+1
 2
-2
-0
-3
-
-
+9
+@
+I
 (module
   (import "wasi_snapshot_preview1" "fd_write"
     (func $fd_write (param i32 i32 i32 i32) (result i32)))
@@ -253,11 +302,17 @@ end
           local.get $i
           local.get $i
           i32.mul
+          local.tee $__temp_check
           local.get $a
           local.get $i
           i32.const 1
           i32.sub
+          i32.const 4
+          i32.mul
+          i32.const 4
           i32.add
+          i32.add
+          local.get $__temp_check
           i32.store
           local.get $i
           i32.const 1
@@ -284,6 +339,8 @@ end
           i32.sub
           i32.const 4
           i32.mul
+          i32.const 4
+          i32.add
           i32.add
           i32.load
           call $print_i32
@@ -302,9 +359,10 @@ end
 )
 
 
+
 ## ЗАМЕЧАНИЕ 4
 
-почему не запустилсоь, исправь
+почему пустой аутпут, исправьт
 // [OK] for v in array (iteration over elements)
 // Expect output: 2 4 6
 
@@ -322,19 +380,7 @@ end
 
 >> 012_for_iterate_over_array
 -------------------------------------
-[Runtime error]
-Error: failed to run main module `build/outputs/wasm_bin/012_for_iterate_over_array.wasm`
-
-Caused by:
-    0: failed to invoke command default
-    1: error while executing at wasm backtrace:
-           0:     0xfd - <unknown>!<wasm function 3>
-           1:    0x131 - <unknown>!<wasm function 4>
-    2: memory fault at wasm address 0xfffffffc in linear memory of size 0x10000
-    3: wasm trap: out of bounds memory access
-    
-    
-    (module
+(module
   (import "wasi_snapshot_preview1" "fd_write"
     (func $fd_write (param i32 i32 i32 i32) (result i32)))
   (memory 1)
@@ -381,31 +427,47 @@ Caused by:
       (local $idx_v i32)
       (local $__temp_check i32)
       i32.const 2
+      local.tee $__temp_check
       local.get $a
       i32.const 1
       i32.const 1
       i32.sub
+      i32.const 4
+      i32.mul
+      i32.const 4
       i32.add
+      i32.add
+      local.get $__temp_check
       i32.store
       i32.const 4
+      local.tee $__temp_check
       local.get $a
       i32.const 2
       i32.const 1
       i32.sub
+      i32.const 4
+      i32.mul
+      i32.const 4
       i32.add
+      i32.add
+      local.get $__temp_check
       i32.store
       i32.const 6
+      local.tee $__temp_check
       local.get $a
       i32.const 3
       i32.const 1
       i32.sub
+      i32.const 4
+      i32.mul
+      i32.const 4
       i32.add
+      i32.add
+      local.get $__temp_check
       i32.store
       local.get $a
       local.set $arr_base_v
       local.get $arr_base_v
-      i32.const 4
-      i32.sub
       i32.load
       local.set $arr_size_v
       i32.const 0
@@ -417,6 +479,8 @@ Caused by:
           i32.ge_u
           br_if $end
           local.get $arr_base_v
+          i32.const 4
+          i32.add
           local.get $idx_v
           i32.const 4
           i32.mul
@@ -440,10 +504,9 @@ Caused by:
 )
 
 
-
 ## ЗАМЕЧАНИЕ 5
 
-почему выводит букву Т, должно выводить число\
+почему всё еще выводит букву Т, должно выводить число\
 // [OK] function with return + call
 // Expect output: 36
 
@@ -456,7 +519,6 @@ end
 >> 015_function_return_and_call
 -------------------------------------
 T
-
 
 (module
   (import "wasi_snapshot_preview1" "fd_write"
@@ -517,104 +579,9 @@ T
 
 
 
-## ЗАМЕЧАНИЕ 6
-тут Compilation error, хотя не должно быть, у меня по языку передача аргумента в функцию равняется присваиванию 
-
-
-routine inc(n : integer) : integer => n + 1
-
-routine Main() is
-  var r : real is 3.14
-  print inc(r)    
-end
-
->> 016_diff_arg_type_in_call
--------------------------------------
-[Compilation error]
-
-
-(module
-  (import "wasi_snapshot_preview1" "fd_write"
-    (func $fd_write (param i32 i32 i32 i32) (result i32)))
-  (memory 1)
-  (export "memory" (memory 0))
-
-  (func $print_i32 (param $value i32)
-    (local $buf i32)
-    (local.set $buf (i32.const 1024))
-    (i32.store8
-      (local.get $buf)
-      (i32.add (i32.const 48) (local.get $value)))
-    (i32.store8
-      (i32.add (local.get $buf) (i32.const 1))
-      (i32.const 10))
-    (i32.store (i32.const 0) (local.get $buf))
-    (i32.store (i32.const 4) (i32.const 2))
-    (i32.store8
-      (local.get $buf)
-      (i32.add (i32.const 48) (local.get $value)))
-    (i32.store8
-      (i32.add (local.get $buf) (i32.const 1))
-      (i32.const 10))
-    (i32.store (i32.const 0) (local.get $buf))
-    (i32.store (i32.const 4) (i32.const 2))
-    (i32.const 1)
-    (i32.const 0)
-    (i32.const 1)
-    (i32.const 8)
-    call $fd_write
-    drop
-  )
-
-  (func $print_f64 (param $value f64)
-    (call $print_i32 (i32.trunc_f64_s (local.get $value)))
-  )
-
-    (func $inc
-      (param $n i32)
-      (result i32)
-      (local $__temp_check i32)
-      local.get $n
-      i32.const 1
-      i32.add
-    )
-    (func $Main
-      (local $r f64)
-      (local $__temp_check i32)
-      f64.const 3.140000
-      local.set $r
-      local.get $r
-      call $inc
-      call $print_i32
-      return
-    )
-  (func (export "_start")
-    call $Main
-  )
-)
-
-Задача: исправить проверку типов и неявные преобразования в моём компиляторе/интерпретаторе языка (Imperative Language). Нужно корректно обрабатывать присваивание и передачу параметров по правилам спецификации.
-
-Ключ из спецификации (важно соблюдать):
-	1.	Передача аргументов в подпрограммы имеет ту же семантику, что и обычное присваивание (то есть те же правила конформности типов).  ￼
-	2.	Таблица конверсий для примитивов при Assignment (левая часть :=, правая часть — выражение):
-
-	•	integer := integer — копирование значения.  ￼
-	•	integer := real — разрешено, округление к ближайшему целому.  ￼
-	•	integer := boolean — разрешено: true → 1, false → 0.  ￼
-	•	real := real — копирование значения.  ￼
-	•	real := integer — разрешено, копирование (целое → вещественное).  ￼
-	•	real := boolean — запрещено.  ￼
-	•	boolean := boolean — копирование значения.  ￼
-	•	boolean := integer — условно разрешено: если rhs ∈ {0,1} → false/true, иначе ошибка.  ￼
-	•	boolean := real — запрещено.  ￼
-
-	3.	Для пользовательских типов (record/array) — требуется полная идентичность типа, т.е. одна и та же объявленная user-type; они — reference types (присваивание копирует ссылку).  ￼
-
-
 ## ЗАМЕЧАНИЕ 7
 
-тут какие-то проблемы с выводом\
+тут всё ещё какие-то проблемы с выводом\
 // [OK] scope + shadowing
 // Expect output: 1 2 1
 
@@ -633,7 +600,6 @@ end
 0
 2
 2
-
 (module
   (import "wasi_snapshot_preview1" "fd_write"
     (func $fd_write (param i32 i32 i32 i32) (result i32)))
@@ -693,6 +659,7 @@ end
 )
 
 
+
 ## ЗАМЕЧАНИЕ 8
 почему он сбилдил wat и wasm файл если синтаксическая ошибка
 /*
@@ -742,96 +709,10 @@ var x : integer
 
 )
 
+
 >> 025_bad_comment
 -------------------------------------
 
-
-## ЗАМЕЧАНИЕ 9
-почему compilation error, должно работать - исправь
-routine ping() is
-  print 42
-end
-
-routine sum(a : integer, b : integer) : integer => a + b
-
-routine Main() is
-  ping()
-  print sum(3, 5), sum(10, 20)
-end
->> 036_calls_no_args_multi_args
--------------------------------------
-[Compilation error]
-
-(module
-  (import "wasi_snapshot_preview1" "fd_write"
-    (func $fd_write (param i32 i32 i32 i32) (result i32)))
-  (memory 1)
-  (export "memory" (memory 0))
-
-  (func $print_i32 (param $value i32)
-    (local $buf i32)
-    (local.set $buf (i32.const 1024))
-    (i32.store8
-      (local.get $buf)
-      (i32.add (i32.const 48) (local.get $value)))
-    (i32.store8
-      (i32.add (local.get $buf) (i32.const 1))
-      (i32.const 10))
-    (i32.store (i32.const 0) (local.get $buf))
-    (i32.store (i32.const 4) (i32.const 2))
-    (i32.store8
-      (local.get $buf)
-      (i32.add (i32.const 48) (local.get $value)))
-    (i32.store8
-      (i32.add (local.get $buf) (i32.const 1))
-      (i32.const 10))
-    (i32.store (i32.const 0) (local.get $buf))
-    (i32.store (i32.const 4) (i32.const 2))
-    (i32.const 1)
-    (i32.const 0)
-    (i32.const 1)
-    (i32.const 8)
-    call $fd_write
-    drop
-  )
-
-  (func $print_f64 (param $value f64)
-    (call $print_i32 (i32.trunc_f64_s (local.get $value)))
-  )
-
-    (func $ping
-      (local $__temp_check i32)
-      i32.const 42
-      call $print_i32
-      return
-    )
-    (func $sum
-      (param $a i32)
-      (param $b i32)
-      (result i32)
-      (local $__temp_check i32)
-      local.get $a
-      local.get $b
-      i32.add
-    )
-    (func $Main
-      (local $__temp_check i32)
-      call $ping
-      drop
-      i32.const 3
-      i32.const 5
-      call $sum
-      call $print_i32
-      i32.const 10
-      i32.const 20
-      call $sum
-      call $print_i32
-      return
-    )
-  (func (export "_start")
-    call $Main
-  )
-)
 
 
 ## ЗАМЕЧАНИЕ 10
@@ -855,12 +736,11 @@ end
 
 >> 040_demoB
 -------------------------------------
-3
-0
+I
+@
+9
 2
 2
-0
-
 (module
   (import "wasi_snapshot_preview1" "fd_write"
     (func $fd_write (param i32 i32 i32 i32) (result i32)))
@@ -927,11 +807,17 @@ end
           br_if $end
           local.get $i
           call $square
+          local.tee $__temp_check
           local.get $xs
           local.get $i
           i32.const 1
           i32.sub
+          i32.const 4
+          i32.mul
+          i32.const 4
           i32.add
+          i32.add
+          local.get $__temp_check
           i32.store
           local.get $i
           i32.const 1
@@ -958,6 +844,8 @@ end
           i32.sub
           i32.const 4
           i32.mul
+          i32.const 4
+          i32.add
           i32.add
           i32.load
           call $print_i32
@@ -974,6 +862,7 @@ end
     call $Main
   )
 )
+
 
 ## ЗАМЕЧАНИЕ 11
 
@@ -1067,78 +956,3 @@ D
   )
 )
 
-## ЗАМЕЧАНИЕ 12
-
-не должно быть ошитбки, должно округлиться до 3 и передаться в функцию
-
-
-routine square(n : integer) : integer => n * n
-
-routine Main() is
-  var r : real is 3.14
-  print square(r) 
-end
-
-
->> semantic_009_type_checking_args
--------------------------------------
-[Compilation error]
-(module
-  (import "wasi_snapshot_preview1" "fd_write"
-    (func $fd_write (param i32 i32 i32 i32) (result i32)))
-  (memory 1)
-  (export "memory" (memory 0))
-
-  (func $print_i32 (param $value i32)
-    (local $buf i32)
-    (local.set $buf (i32.const 1024))
-    (i32.store8
-      (local.get $buf)
-      (i32.add (i32.const 48) (local.get $value)))
-    (i32.store8
-      (i32.add (local.get $buf) (i32.const 1))
-      (i32.const 10))
-    (i32.store (i32.const 0) (local.get $buf))
-    (i32.store (i32.const 4) (i32.const 2))
-    (i32.store8
-      (local.get $buf)
-      (i32.add (i32.const 48) (local.get $value)))
-    (i32.store8
-      (i32.add (local.get $buf) (i32.const 1))
-      (i32.const 10))
-    (i32.store (i32.const 0) (local.get $buf))
-    (i32.store (i32.const 4) (i32.const 2))
-    (i32.const 1)
-    (i32.const 0)
-    (i32.const 1)
-    (i32.const 8)
-    call $fd_write
-    drop
-  )
-
-  (func $print_f64 (param $value f64)
-    (call $print_i32 (i32.trunc_f64_s (local.get $value)))
-  )
-
-    (func $square
-      (param $n i32)
-      (result i32)
-      (local $__temp_check i32)
-      local.get $n
-      local.get $n
-      i32.mul
-    )
-    (func $Main
-      (local $r f64)
-      (local $__temp_check i32)
-      f64.const 3.140000
-      local.set $r
-      local.get $r
-      call $square
-      call $print_i32
-      return
-    )
-  (func (export "_start")
-    call $Main
-  )
-)
