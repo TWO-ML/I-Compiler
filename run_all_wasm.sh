@@ -1,31 +1,31 @@
 #!/bin/bash
-set -u  # без -e, чтобы не падать на ошибках
+set -u 
 
 WASM_DIR="build/outputs/wasm_bin"
-
+WAT_DIR="build/outputs/wasm_wat"
 if ! command -v wasmtime >/dev/null 2>&1; then
   echo "Error: wasmtime not installed!"
   exit 1
 fi
 
-shopt -s nullglob
-FILES=("$WASM_DIR"/*.wasm)
-
-if [ ${#FILES[@]} -eq 0 ]; then
-  echo "No WASM files found in $WASM_DIR"
-  exit 0
-fi
-
-echo "Running all WebAssembly binaries from $WASM_DIR"
+echo "Running all test cases"
 echo "------------------------------------------------"
 
-for wasm in "${FILES[@]}"; do
-  base=$(basename "$wasm")
+shopt -s nullglob
+for wat in "$WAT_DIR"/*.wat; do
+  wat_base=$(basename "$wat")
+  name="${wat_base%.wat}"
+  wasm="$WASM_DIR/${name}.wasm"
 
-  echo ">> Running $base"
+  echo ">> $name"
   echo "-------------------------------------"
 
-  # Запускаем и не падаем при ошибке
+  if [ ! -e "$wasm" ]; then
+    echo "[Compilation error]"
+    echo
+    continue
+  fi
+
   if output=$(wasmtime "$wasm" 2>&1); then
     echo "$output"
   else
