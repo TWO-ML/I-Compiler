@@ -43,13 +43,11 @@ chmod +x run.sh
 ./run.sh
 ```
 ### Запуск Wasm файлов для получения атупута
-### З
 ```bash
 chmod +x run_all_wasm.sh
 ./run_all_wasm.sh
 ```
 
-pi` - все оптимизации
 
 ## Структура проекта
 
@@ -61,6 +59,7 @@ I-Compiler/
 │   ├── semantic_analyzer.cpp   # Семантический анализатор
 │   └── wasm_compiler.cpp        # Компилятор в WebAssembly
 ├── tests/                      # Тестовые файлы
+├── demo_tests/                 # Тестовые файлы для демо
 ├── build/                      # Собранные исполняемые файлы
 ├── Makefile
 ├── run.sh       # Демонстрация выполнения компилятора
@@ -105,18 +104,3 @@ wasmer output.was
 - `wat2wasm` (из пакета wabt): `brew install wabt` или `apt-get install wabt`
 - `wasmtime` или `wasmer` для запуска WASM файлов
 
-### Поддерживаемые конструкции
-
-- ✅ Переменные (integer, real, boolean)
-- ✅ Функции (routine)
-- ✅ Условные операторы (if-then-else)
-- ✅ Циклы (while, for)
-- ✅ Выражения (арифметические, логические, сравнения)
-- ✅ Вызовы функций
-- ✅ Print (базовая поддержка через WASI)
-- ⚠️ Массивы (частичная поддержка)
-- ⚠️ Records (частичная поддержка)
-
-
-**Innopolis University, 2025**
-**Compiler Construction Course**
